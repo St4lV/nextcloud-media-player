@@ -75,7 +75,10 @@ svg {
 	}
 }
 
-/* LOGIN */
+/* ============================================
+   LOGIN
+   ============================================ */
+
 #login-screen {
 	align-items: center;
 	justify-content: center;
@@ -130,7 +133,10 @@ svg {
 	font-weight: 300
 }
 
-/* BUTTONS */
+/* ============================================
+   BUTTONS
+   ============================================ */
+
 .btn {
 	display: inline-flex;
 	align-items: center;
@@ -214,7 +220,10 @@ svg {
 	background: rgba(248, 113, 113, .08) !important
 }
 
-/* TOPBAR */
+/* ============================================
+   TOPBAR
+   ============================================ */
+
 .topbar {
 	display: flex;
 	align-items: center;
@@ -299,7 +308,10 @@ svg {
 	text-transform: uppercase
 }
 
-/* CONTENT */
+/* ============================================
+   CONTENT
+   ============================================ */
+
 .content-scroll {
 	flex: 1;
 	overflow-y: auto;
@@ -325,7 +337,10 @@ svg {
 	color: #fff
 }
 
-/* SEARCH */
+/* ============================================
+   SEARCH
+   ============================================ */
+
 .search-wrap {
 	display: flex;
 	align-items: center;
@@ -379,7 +394,10 @@ svg {
 	color: var(--accent)
 }
 
-/* SCAN STATUS */
+/* ============================================
+   SCAN STATUS
+   ============================================ */
+
 .scan-status {
 	display: flex;
 	align-items: center;
@@ -402,7 +420,10 @@ svg {
 	animation: spin .5s linear infinite
 }
 
-/* ALBUM GROUP */
+/* ============================================
+   ALBUM GROUP
+   ============================================ */
+
 .album-group {
 	margin-bottom: 1.25rem;
 	animation: fadeIn .3s ease backwards
@@ -543,7 +564,10 @@ svg {
 	background: var(--accent-dim)
 }
 
-/* EMPTY */
+/* ============================================
+   EMPTY STATE
+   ============================================ */
+
 .empty-state {
 	display: flex;
 	flex-direction: column;
@@ -555,7 +579,10 @@ svg {
 	font-size: .88rem
 }
 
-/* PLAYLIST GRID */
+/* ============================================
+   PLAYLIST GRID
+   ============================================ */
+
 .playlist-grid {
 	display: grid;
 	grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -633,7 +660,10 @@ svg {
 	text-transform: uppercase
 }
 
-/* PLAYLIST DETAIL */
+/* ============================================
+   PLAYLIST DETAIL
+   ============================================ */
+
 .detail-header {
 	display: flex;
 	align-items: center;
@@ -748,7 +778,10 @@ svg {
 	background: rgba(248, 113, 113, .08)
 }
 
-/* PLAYER BAR */
+/* ============================================
+   PLAYER BAR
+   ============================================ */
+
 .player-bar {
 	position: fixed;
 	bottom: 0;
@@ -862,7 +895,10 @@ svg {
 	justify-content: flex-end
 }
 
-/* VOLUME */
+/* ============================================
+   VOLUME
+   ============================================ */
+
 .volume-wrap {
 	display: flex;
 	align-items: center;
@@ -894,7 +930,10 @@ svg {
 	background: #fff
 }
 
-/* DRAWER */
+/* ============================================
+   DRAWER
+   ============================================ */
+
 .drawer {
 	position: fixed;
 	inset: 0;
@@ -1141,7 +1180,10 @@ svg {
 	font-weight: 500
 }
 
-/* LOADING / TOAST */
+/* ============================================
+   LOADING / TOAST
+   ============================================ */
+
 .loading-overlay {
 	position: fixed;
 	inset: 0;
@@ -1230,16 +1272,704 @@ svg {
 	border-radius: 2px
 }
 
-@media(max-width:640px) {
-	.content-scroll {
-		padding: 1rem
+
+/* ============================================
+   RESPONSIVE — TABLET (≤768px)
+   ============================================ */
+
+@media (max-width: 768px) {
+	.search-wrap {
+		max-width: none;
+		flex: 1 1 100%;
+		order: 3
+	}
+
+	.track-row {
+		grid-template-columns: 24px 36px 1fr 28px;
+		gap: .25rem
+	}
+
+	.track-size {
+		display: none
+	}
+
+	.track-cover {
+		width: 32px;
+		height: 32px
 	}
 
 	.playlist-grid {
-		grid-template-columns: 1fr
+		grid-template-columns: repeat(auto-fill, minmax(160px, 1fr))
+	}
+
+	.drawer-cover {
+		width: 140px;
+		height: 140px
+	}
+}
+
+
+/* ============================================
+   RESPONSIVE — MOBILE (≤640px)
+   ============================================ */
+
+@media (max-width: 640px) {
+
+	/* -- Topbar -- */
+	.topbar {
+		padding: 0 .65rem;
+		height: 48px;
+		gap: .3rem
+	}
+
+	.topbar-left {
+		gap: .35rem;
+		min-width: 0;
+		flex: 1
+	}
+
+	.topbar-right {
+		gap: .25rem
+	}
+
+	.brand {
+		font-size: .78rem;
+		gap: .2rem
+	}
+
+	.brand svg {
+		width: 13px;
+		height: 13px
+	}
+
+	.main-nav {
+		margin-left: .4rem;
+		padding: 2px
+	}
+
+	.nav-tab {
+		font-size: .7rem;
+		padding: .3rem .55rem
+	}
+
+	.user-pill {
+		font-size: .62rem;
+		padding: .1rem .3rem .1rem .1rem
+	}
+
+	.user-dot {
+		width: 18px;
+		height: 18px;
+		font-size: .52rem
+	}
+
+	#user-name {
+		display: none
+	}
+
+	#logout-btn {
+		width: 28px;
+		height: 28px
+	}
+
+	#logout-btn svg {
+		width: 14px;
+		height: 14px
+	}
+
+	/* -- Content -- */
+	.content-scroll {
+		padding: .65rem;
+		padding-bottom: calc(var(--bar-h) + .75rem)
+	}
+
+	.view-header {
+		margin-bottom: .5rem;
+		gap: .45rem
+	}
+
+	.view-header h2 {
+		font-size: .92rem
+	}
+
+	/* -- Search -- */
+	.search-wrap {
+		max-width: none;
+		flex: 1 1 100%;
+		order: 3;
+		padding: .28rem .45rem
+	}
+
+	.search-input {
+		font-size: .8rem
+	}
+
+	/* -- Scan -- */
+	.scan-status {
+		padding: .4rem .55rem;
+		font-size: .7rem
+	}
+
+	/* -- Albums -- */
+	.album-group {
+		margin-bottom: .85rem
+	}
+
+	.album-header {
+		gap: .4rem;
+		margin-bottom: .3rem
+	}
+
+	.album-cover {
+		width: 36px;
+		height: 36px
+	}
+
+	.album-name {
+		font-size: .8rem
+	}
+
+	.album-count {
+		font-size: .6rem
+	}
+
+	.album-play {
+		width: 28px;
+		height: 28px
+	}
+
+	.album-play svg {
+		width: 14px;
+		height: 14px
+	}
+
+	/* -- Tracks: hide cover & size on mobile -- */
+	.track-row {
+		grid-template-columns: 22px 1fr 30px;
+		gap: .15rem;
+		padding: .4rem .3rem
+	}
+
+	.track-cover {
+		display: none
+	}
+
+	.track-size {
+		display: none
+	}
+
+	.track-num {
+		font-size: .58rem
+	}
+
+	.track-name {
+		font-size: .78rem
+	}
+
+	.track-add {
+		opacity: .5;
+		width: 28px;
+		height: 28px
+	}
+
+	/* -- Playlists -- */
+	.playlist-grid {
+		grid-template-columns: 1fr;
+		gap: .35rem
+	}
+
+	.pl-card {
+		padding: .65rem;
+		display: flex;
+		align-items: center;
+		gap: .55rem
+	}
+
+	.pl-card-icon {
+		width: 40px;
+		height: 40px;
+		margin-bottom: 0;
+		flex-shrink: 0
+	}
+
+	.pl-card-icon svg {
+		width: 18px;
+		height: 18px
+	}
+
+	.pl-card-name {
+		font-size: .82rem;
+		margin-bottom: .05rem
+	}
+
+	.pl-card-count {
+		font-size: .64rem
+	}
+
+	/* -- Playlist detail -- */
+	.detail-header {
+		gap: .3rem;
+		flex-wrap: wrap
+	}
+
+	.detail-name {
+		font-size: .95rem;
+		min-width: 0
+	}
+
+	.detail-actions {
+		gap: .05rem
+	}
+
+	.detail-actions .icon-btn {
+		width: 28px;
+		height: 28px
+	}
+
+	.detail-actions .icon-btn svg {
+		width: 13px;
+		height: 13px
+	}
+
+	.detail-meta {
+		font-size: .68rem;
+		margin-bottom: .4rem
+	}
+
+	.dt-row {
+		grid-template-columns: 26px 1fr 44px 28px;
+		gap: .15rem;
+		padding: .35rem .25rem
+	}
+
+	.dt-name {
+		font-size: .78rem
+	}
+
+	.dt-remove {
+		opacity: .4
+	}
+
+	/* -- Player bar -- */
+	:root {
+		--bar-h: 62px
+	}
+
+	.pb-inner {
+		padding: 0 .45rem
+	}
+
+	.pb-left {
+		gap: .35rem
+	}
+
+	.pb-cover {
+		width: 36px;
+		height: 36px
+	}
+
+	.pb-title {
+		font-size: .76rem
+	}
+
+	.pb-sub {
+		font-size: .58rem
+	}
+
+	.pb-center {
+		gap: .02rem;
+		flex-shrink: 0
+	}
+
+	.pb-play {
+		width: 34px;
+		height: 34px
+	}
+
+	.pb-play svg {
+		width: 16px;
+		height: 16px
+	}
+
+	#btn-prev,
+	#btn-next {
+		width: 28px;
+		height: 28px
+	}
+
+	#btn-prev svg,
+	#btn-next svg {
+		width: 13px;
+		height: 13px
+	}
+
+	.pb-right {
+		gap: 0;
+		flex: 0 0 auto
 	}
 
 	.volume-wrap {
 		display: none
+	}
+
+	#btn-shuffle-toggle {
+		display: none
+	}
+
+	#btn-add-queue {
+		width: 28px;
+		height: 28px
+	}
+
+	#btn-expand {
+		width: 28px;
+		height: 28px
+	}
+
+	/* -- Drawer — full mobile player -- */
+	.drawer-content {
+		max-height: 93vh;
+		border-radius: var(--radius-lg) var(--radius-lg) 0 0
+	}
+
+	.drawer-head {
+		padding: .5rem .65rem
+	}
+
+	.drawer-player {
+		padding: 1rem .65rem .65rem;
+		gap: .35rem
+	}
+
+	.drawer-cover {
+		width: min(200px, 55vw);
+		height: min(200px, 55vw)
+	}
+
+	.drawer-track-name {
+		font-size: .92rem;
+		max-width: 90%
+	}
+
+	.drawer-track-path {
+		font-size: .6rem;
+		max-width: 95%
+	}
+
+	.drawer-time {
+		width: 95%;
+		gap: .3rem
+	}
+
+	.drawer-time span {
+		font-size: .6rem;
+		width: 30px
+	}
+
+	.seek-bar {
+		height: 6px
+	}
+
+	.seek-bar::-webkit-slider-thumb {
+		width: 18px;
+		height: 18px
+	}
+
+	.drawer-controls {
+		gap: .6rem;
+		margin: .6rem 0
+	}
+
+	.drawer-controls .icon-btn {
+		width: 42px;
+		height: 42px
+	}
+
+	.drawer-controls .icon-btn svg {
+		width: 22px;
+		height: 22px
+	}
+
+	.d-play {
+		width: 54px;
+		height: 54px
+	}
+
+	.d-play svg {
+		width: 28px;
+		height: 28px
+	}
+
+	.drawer-volume {
+		width: min(280px, 85%);
+		gap: .5rem
+	}
+
+	.drawer-volume .volume-slider {
+		width: 100%
+	}
+
+	.dm-tag {
+		font-size: .56rem
+	}
+
+	.drawer-queue-title {
+		font-size: .64rem;
+		padding: .35rem .65rem 0
+	}
+
+	.drawer-queue {
+		padding: .25rem .45rem .45rem
+	}
+
+	.dq-row {
+		padding: .35rem .25rem;
+		gap: .25rem
+	}
+
+	.dq-name {
+		font-size: .76rem
+	}
+
+	/* -- Toasts -- */
+	.toast-container {
+		bottom: calc(var(--bar-h) + .4rem);
+		right: .4rem;
+		left: .4rem
+	}
+
+	.toast {
+		font-size: .74rem;
+		padding: .4rem .6rem;
+		max-width: none
+	}
+
+	/* -- Login -- */
+	.login-card h1 {
+		font-size: 1.45rem
+	}
+
+	.login-sub {
+		font-size: .78rem;
+		margin: .3rem 0 1.5rem;
+		padding: 0 1.5rem
+	}
+
+	.login-icon {
+		width: 58px;
+		height: 58px;
+		margin-bottom: .9rem
+	}
+
+	.login-icon svg {
+		width: 26px;
+		height: 26px
+	}
+
+	.btn-accent {
+		padding: .5rem 1rem;
+		font-size: .8rem
+	}
+}
+
+
+/* ============================================
+   RESPONSIVE — SMALL PHONE (≤380px)
+   ============================================ */
+
+@media (max-width: 380px) {
+	.topbar {
+		padding: 0 .4rem
+	}
+
+	.main-nav {
+		margin-left: .2rem
+	}
+
+	.nav-tab {
+		font-size: .64rem;
+		padding: .22rem .38rem
+	}
+
+	.brand span {
+		display: none
+	}
+
+	.content-scroll {
+		padding: .4rem
+	}
+
+	.album-cover {
+		width: 30px;
+		height: 30px
+	}
+
+	.track-row {
+		grid-template-columns: 1fr 28px;
+		padding: .35rem .2rem
+	}
+
+	.track-num {
+		display: none
+	}
+
+	.pb-cover {
+		display: none
+	}
+
+	.pb-inner {
+		padding: 0 .3rem
+	}
+
+	.drawer-cover {
+		width: min(170px, 60vw);
+		height: min(170px, 60vw)
+	}
+}
+
+
+/* ============================================
+   SAFE AREA — notched phones (iPhone X+)
+   ============================================ */
+
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+	.player-bar {
+		padding-bottom: env(safe-area-inset-bottom)
+	}
+
+	.drawer-content {
+		padding-bottom: env(safe-area-inset-bottom)
+	}
+
+	.toast-container {
+		bottom: calc(var(--bar-h) + env(safe-area-inset-bottom) + .4rem)
+	}
+
+	.content-scroll {
+		padding-bottom: calc(var(--bar-h) + env(safe-area-inset-bottom) + 1rem)
+	}
+}
+
+
+/* ============================================
+   TOUCH DEVICES — larger tap targets
+   ============================================ */
+
+@media (hover: none) and (pointer: coarse) {
+	.track-row {
+		min-height: 44px
+	}
+
+	.dt-row {
+		min-height: 44px
+	}
+
+	.dq-row {
+		min-height: 42px
+	}
+
+	.icon-btn {
+		min-width: 36px;
+		min-height: 36px
+	}
+
+	.track-add {
+		opacity: .5;
+		min-width: 36px;
+		min-height: 36px
+	}
+
+	.dt-remove {
+		opacity: .4;
+		min-width: 36px;
+		min-height: 36px
+	}
+
+	.nav-tab {
+		min-height: 36px;
+		display: flex;
+		align-items: center
+	}
+
+	.seek-bar::-webkit-slider-thumb {
+		width: 18px;
+		height: 18px
+	}
+
+	.volume-slider::-webkit-slider-thumb {
+		width: 14px;
+		height: 14px
+	}
+
+	/* Disable hover effects on touch — prevent stuck states */
+	.track-row:hover {
+		background: transparent
+	}
+
+	.track-row.playing:hover {
+		background: var(--accent-dim)
+	}
+
+	.track-row:active {
+		background: var(--bg-hover)
+	}
+
+	.dt-row:hover {
+		background: transparent
+	}
+
+	.dt-row.playing:hover {
+		background: var(--accent-dim)
+	}
+
+	.dt-row:active {
+		background: var(--bg-hover)
+	}
+
+	.dq-row:hover {
+		background: transparent
+	}
+
+	.dq-row.playing:hover {
+		background: var(--accent-dim)
+	}
+
+	.dq-row:active {
+		background: var(--bg-hover)
+	}
+
+	.pl-card:hover {
+		transform: none;
+		box-shadow: none;
+		background: var(--bg-2);
+		border-color: var(--border)
+	}
+
+	.pl-card:active {
+		background: var(--bg-hover);
+		border-color: rgba(56, 189, 248, .15)
+	}
+
+	.icon-btn:hover {
+		color: var(--text-3);
+		background: transparent
+	}
+
+	.icon-btn:active {
+		color: var(--accent);
+		background: var(--accent-dim)
+	}
+
+	/* Prevent text selection on rapid taps */
+	.track-row,
+	.dt-row,
+	.dq-row,
+	.pl-card,
+	.album-header,
+	.icon-btn,
+	.btn {
+		-webkit-user-select: none;
+		user-select: none;
+		-webkit-tap-highlight-color: transparent
 	}
 }
