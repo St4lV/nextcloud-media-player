@@ -1,0 +1,66 @@
+{
+	"name": "Pastamedia",
+	"short_name": "Pastamedia",
+	"description": "Lecteur multimédia connecté à votre Nextcloud",
+	"start_url": "/",
+	"display": "standalone",
+	"orientation": "any",
+	"background_color": "#050507",
+	"theme_color": "#050507",
+	"icons": [
+		{
+			"src": "/favicon.ico",
+			"sizes": "72x72",
+			"type": "image/png",
+			"purpose": "any maskable"
+		},
+		{
+			"src": "/favicon.ico",
+			"sizes": "96x96",
+			"type": "image/png",
+			"purpose": "any maskable"
+		},
+		{
+			"src": "/favicon.ico",
+			"sizes": "128x128",
+			"type": "image/png",
+			"purpose": "any maskable"
+		},
+		{
+			"src": "/favicon.ico",
+			"sizes": "144x144",
+			"type": "image/png",
+			"purpose": "any maskable"
+		},
+		{
+			"src": "/favicon.ico",
+			"sizes": "152x152",
+			"type": "image/png",
+			"purpose": "any maskable"
+		},
+		{
+			"src": "/favicon.ico",
+			"sizes": "192x192",
+			"type": "image/png",
+			"purpose": "any maskable"
+		},
+		{
+			"src": "/favicon.ico",
+			"sizes": "384x384",
+			"type": "image/png",
+			"purpose": "any maskable"
+		},
+		{
+			"src": "/favicon.ico",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "any maskable"
+		}
+	],
+	"categories": [
+		"music",
+		"entertainment"
+	],
+	"lang": "fr",
+	"dir": "ltr"
+}

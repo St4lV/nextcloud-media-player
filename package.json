@@ -1,0 +1,23 @@
+{
+  "name": "nextcloud-media-player",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "dev": "nodemon server.js",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.2.4",
+    "express": "^5.2.1",
+    "express-fileupload": "^1.5.2",
+    "node-cron": "^4.2.1",
+    "webdav": "^5.9.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}

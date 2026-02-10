@@ -1,0 +1,13 @@
+services:
+  express:
+    image: nextcloud-media-player
+    container_name: nextcloud_media_player
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    expose:
+      - "3000"
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    env_file:
+      - .env

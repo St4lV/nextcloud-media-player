@@ -1,0 +1,4 @@
+.env.example
+pasta-wiki-manager.sh
+README.md
+.git*
