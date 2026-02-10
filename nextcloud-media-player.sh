@@ -76,7 +76,7 @@ EOF
         docker compose down
         docker container prune -f
         docker image prune -f
-        docker build -t ncmp .
+        docker build -t nexcloud-media-player .
         echo "Updated successfully"
         ./nextcloud-media-player.sh start
         ;;
@@ -111,7 +111,7 @@ EOF
         ./nextcloud-media-player.sh config env
 
         echo "Building NCMP..."
-        docker build -t ncmp .
+        docker build -t nexcloud-media-player .
         ./nextcloud-media-player.sh start
         ;;
 
