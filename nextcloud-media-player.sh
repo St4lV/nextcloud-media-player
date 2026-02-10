@@ -72,13 +72,13 @@ EOF
         unzip ncmp_app.zip -d ../
         rm ncmp_app.zip
         mv .env.bak .env
-        chmod +x ncmp.sh
+        chmod +x nextcloud-media-player.sh
         docker compose down
         docker container prune -f
         docker image prune -f
         docker build -t ncmp .
         echo "Updated successfully"
-        ./ncmp.sh start
+        ./nextcloud-media-player.sh start
         ;;
 
     start)
@@ -108,11 +108,11 @@ EOF
 
         echo ""
         echo "Environment configuration"
-        ./ncmp.sh config env
+        ./nextcloud-media-player.sh config env
 
         echo "Building NCMP..."
         docker build -t ncmp .
-        ./ncmp.sh start
+        ./nextcloud-media-player.sh start
         ;;
 
     *)
