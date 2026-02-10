@@ -1,6 +1,6 @@
 {
-	"name": "Pastamedia",
-	"short_name": "Pastamedia",
+	"name": "Nextcloud Media Player",
+	"short_name": "NCMP",
 	"description": "Lecteur multimédia connecté à votre Nextcloud",
 	"start_url": "/",
 	"display": "standalone",

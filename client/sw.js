@@ -3,7 +3,7 @@ const CACHE_NAME = "st4lv-nextcloud-media-player";
 const APP_SHELL = [
 	"/",
 	"/index.html",
-	"/style.css",
+	"/styles.css",
 	"/main.js",
 	"/manifest.json",
 ];
