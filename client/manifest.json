@@ -4,7 +4,7 @@
 	"description": "Lecteur multimédia connecté à votre Nextcloud",
 	"start_url": "/",
 	"display": "standalone",
-	"orientation": "any",
+	"orientation": "portrait",
 	"background_color": "#050507",
 	"theme_color": "#050507",
 	"icons": [
