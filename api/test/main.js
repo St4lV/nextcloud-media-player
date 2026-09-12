@@ -297,6 +297,125 @@ router.get("/files/scan", authMiddleware, async (req, res) => {
 	}
 });
 
+// ============================================================
+//  ÉTIQUETTES AUDIO (ID3, Vorbis, MP4)
+//  music-metadata est chargé à la demande via import() : le paquet
+//  est distribué en ESM pur à partir de la version 10, ce que require
+//  ne sait pas charger.
+//    npm install music-metadata
+// ============================================================
+
+let musicMetadataPromise = null;
+function loadMusicMetadata() {
+	if (!musicMetadataPromise) musicMetadataPromise = import("music-metadata");
+	return musicMetadataPromise;
+}
+
+const tagCache = new Map();        // clé -> étiquettes (léger, on en garde beaucoup)
+const pictureCache = new Map();    // clé -> pochette intégrée (lourd, on en garde peu)
+const TAG_CACHE_MAX = 500;
+const PICTURE_CACHE_MAX = 30;
+
+function capped(map, max) {
+	while (map.size > max) map.delete(map.keys().next().value);
+}
+
+// La clé inclut l'etag : un fichier réétiqueté côté Nextcloud invalide
+// automatiquement l'entrée.
+function tagKey(userId, filePath, stat) {
+	return `${userId}:${filePath}:${stat.etag || stat.lastmod || stat.size || ""}`;
+}
+
+async function readTags(webdav, userId, filePath, stat) {
+	const key = tagKey(userId, filePath, stat);
+	if (tagCache.has(key)) return { key, tags: tagCache.get(key) };
+
+	const mm = await loadMusicMetadata();
+	const stream = webdav.createReadStream(filePath);
+	let meta;
+	try {
+		// duration: false évite de lire le fichier entier quand la durée
+		// n'est pas inscrite dans l'en-tête. Le flux est coupé dès que
+		// les étiquettes sont analysées.
+		meta = await mm.parseStream(
+			stream,
+			{ mimeType: stat.mime || undefined, size: Number(stat.size) || undefined },
+			{ duration: false, skipCovers: false }
+		);
+	} finally {
+		stream.destroy();
+	}
+
+	const c = meta.common || {};
+	const picture = Array.isArray(c.picture) && c.picture.length ? c.picture[0] : null;
+
+	const tags = {
+		title: c.title || null,
+		artist: c.artist || c.albumartist || null,
+		albumartist: c.albumartist || null,
+		album: c.album || null,
+		track: c.track?.no ?? null,
+		disk: c.disk?.no ?? null,
+		year: c.year || null,
+		genre: Array.isArray(c.genre) && c.genre.length ? c.genre[0] : null,
+		duration: meta.format?.duration || null,
+		hasPicture: !!picture,
+	};
+
+	tagCache.set(key, tags);
+	capped(tagCache, TAG_CACHE_MAX);
+
+	if (picture) {
+		pictureCache.set(key, {
+			data: Buffer.from(picture.data),
+			format: picture.format || "image/jpeg",
+		});
+		capped(pictureCache, PICTURE_CACHE_MAX);
+	}
+
+	return { key, tags };
+}
+
+router.get("/files/tags", authMiddleware, async (req, res) => {
+	const filePath = req.query.path;
+	if (!filePath) return res.status(400).json({ error: "Paramètre path requis" });
+	try {
+		const stat = await cachedStat(req.webdav, req.ncUser, filePath);
+		const { tags } = await readTags(req.webdav, req.ncUser, filePath, stat);
+		res.set("Cache-Control", "private, max-age=3600");
+		res.json({ path: filePath, ...tags });
+	} catch (err) {
+		// Fichier sans étiquette ou format non reconnu : ce n'est pas une
+		// erreur, le client se rabat sur le nom du fichier.
+		console.warn(`[Tags] Lecture impossible pour ${filePath}:`, err.message);
+		res.json({ path: filePath, title: null, artist: null, album: null, hasPicture: false });
+	}
+});
+
+router.get("/files/cover", authMiddleware, async (req, res) => {
+	const filePath = req.query.path;
+	if (!filePath) return res.status(400).json({ error: "Paramètre path requis" });
+	try {
+		const stat = await cachedStat(req.webdav, req.ncUser, filePath);
+		let key = tagKey(req.ncUser, filePath, stat);
+		if (!pictureCache.has(key)) ({ key } = await readTags(req.webdav, req.ncUser, filePath, stat));
+
+		const picture = pictureCache.get(key);
+		if (!picture) return res.status(404).json({ error: "Aucune pochette intégrée" });
+
+		const etag = `"cover-${Buffer.byteLength(key)}-${picture.data.length}"`;
+		if (req.headers["if-none-match"] === etag) return res.status(304).end();
+
+		res.set("Content-Type", picture.format);
+		res.set("Content-Length", String(picture.data.length));
+		res.set("Cache-Control", "private, max-age=86400");
+		res.set("ETag", etag);
+		res.end(picture.data);
+	} catch (err) {
+		res.status(404).json({ error: "Aucune pochette intégrée", details: err.message });
+	}
+});
+
 router.get("/files/stat", authMiddleware, async (req, res) => {
 	const filePath = req.query.path;
 	if (!filePath) return res.status(400).json({ error: "Paramètre path requis" });

@@ -366,9 +366,20 @@ function renderMediaView() {
 //  PLAYBACK
 // ============================================
 function playTrackDirect(path, name, cover) {
-	currentMedia = { path, name, cover: cover || null };
+	currentMedia = { path, name, cover: cover || null, tags: tagsCache.get(path) || null };
 	playIntent = true;
 	playRetries = 0;
+
+	// Étiquettes pas encore connues : on affiche le repli tout de suite
+	// et on corrige dès qu'elles arrivent.
+	if (!currentMedia.tags) {
+		const requested = path;
+		fetchTags(path).then(tags => {
+			if (!currentMedia || currentMedia.path !== requested) return;
+			currentMedia.tags = tags;
+			updateNowPlayingUI();
+		});
+	}
 
 	if (standbyPath === path && audioStandby.readyState >= 2) {
 		// La piste est déjà en mémoire tampon : bascule immédiate, zéro réseau
@@ -438,25 +449,72 @@ const COVER_SVG = (size, opacity) => `<svg width="${size}" height="${size}" view
 
 // L'image n'est insérée qu'une fois chargée : en cas d'échec le SVG
 // de repli reste affiché, jamais l'icône d'image cassée du navigateur.
-function setCover(el, coverPath, size, opacity) {
+function setCover(el, url, size, opacity) {
 	el.innerHTML = COVER_SVG(size, opacity);
-	if (!coverPath) return;
+	if (!url) return;
 	const img = new Image();
 	img.alt = "";
 	img.decoding = "async";
 	img.addEventListener("load", () => { el.replaceChildren(img); });
-	img.src = mediaUrl(coverPath);
+	img.src = url;
+}
+
+// ============================================
+//  ÉTIQUETTES AUDIO
+//  Elles sont récupérées à l'avance, en même temps que la mise en
+//  tampon de la piste suivante : au changement de piste en
+//  arrière-plan, le titre affiché et la notification sont corrects
+//  immédiatement, sans dépendre du réseau.
+// ============================================
+const tagsCache = new Map();     // chemin -> étiquettes
+const tagsInFlight = new Map();  // chemin -> promesse en cours
+
+function fetchTags(path) {
+	if (tagsCache.has(path)) return Promise.resolve(tagsCache.get(path));
+	if (tagsInFlight.has(path)) return tagsInFlight.get(path);
+
+	const p = api(`/files/tags?path=${encodeURIComponent(path)}`)
+		.then(tags => { tagsCache.set(path, tags); return tags; })
+		.catch(() => { const empty = {}; tagsCache.set(path, empty); return empty; })
+		.finally(() => tagsInFlight.delete(path));
+
+	tagsInFlight.set(path, p);
+	return p;
+}
+
+// Repli sur le nom de fichier et le dossier parent quand le média
+// n'est pas étiqueté.
+function displayInfo(media) {
+	const tags = media.tags || tagsCache.get(media.path) || {};
+	const dirParts = media.path.split("/").filter(Boolean);
+	const folder = dirParts.length > 1 ? dirParts[dirParts.length - 2] : "Nextcloud";
+
+	const title = tags.title || media.name.replace(/\.[^/.]+$/, "");
+	const album = tags.album || folder;
+	const artist = tags.artist || tags.albumartist || "";
+
+	const coverUrl = media.cover
+		? mediaUrl(media.cover)
+		: (tags.hasPicture ? `${API}/files/cover?path=${encodeURIComponent(media.path)}&userId=${currentUser}` : null);
+
+	return { title, album, artist, folder, coverUrl };
 }
 
 function updateBarInfo() {
 	if (!currentMedia) return;
-	$("#pb-title").textContent = currentMedia.name;
-	$("#pb-sub").textContent = currentMedia.path;
-	$("#drawer-track-name").textContent = currentMedia.name;
-	$("#drawer-track-path").textContent = currentMedia.path;
+	const info = displayInfo(currentMedia);
+	const subtitle = [info.artist, info.album].filter(Boolean).join(" · ");
 
-	setCover($("#pb-cover"), currentMedia.cover, 18, "0.4");
-	setCover($("#drawer-cover"), currentMedia.cover, 48, "0.2");
+	$("#pb-title").textContent = info.title;
+	$("#pb-sub").textContent = subtitle;
+	$("#drawer-track-name").textContent = info.title;
+	$("#drawer-track-path").textContent = subtitle;
+	// Le chemin reste accessible en infobulle
+	$("#pb-sub").title = currentMedia.path;
+	$("#drawer-track-path").title = currentMedia.path;
+
+	setCover($("#pb-cover"), info.coverUrl, 18, "0.4");
+	setCover($("#drawer-cover"), info.coverUrl, 48, "0.2");
 
 	// Appel API repoussé à l'ouverture du tiroir : inutile et fragile
 	// quand la page est en arrière-plan
@@ -475,23 +533,19 @@ const hasMediaSession = "mediaSession" in navigator;
 
 function updateMediaSessionMetadata() {
 	if (!hasMediaSession || !currentMedia) return;
-	const title = currentMedia.name.replace(/\.[^/.]+$/, "");
-	const dirParts = currentMedia.path.split("/").filter(Boolean);
-	const album = dirParts.length > 1 ? dirParts[dirParts.length - 2] : "Nextcloud";
-	// Une seule entree, sans "type" fige : declarer image/jpeg pour une
-	// pochette PNG fait rejeter l'illustration par Chrome, d'ou la
+	const info = displayInfo(currentMedia);
+	// Une seule entrée, sans "type" figé : déclarer image/jpeg pour une
+	// pochette PNG fait rejeter l'illustration par Chrome, d'où la
 	// vignette manquante dans la notification.
-	const artwork = currentMedia.cover
-		? [{ src: mediaUrl(currentMedia.cover), sizes: "512x512" }]
-		: [];
+	const artwork = info.coverUrl ? [{ src: info.coverUrl, sizes: "512x512" }] : [];
 	try {
 		navigator.mediaSession.metadata = new MediaMetadata({
-			title,
-			artist: album,
-			album,
+			title: info.title,
+			artist: info.artist || info.folder,
+			album: info.album,
 			artwork,
 		});
-	} catch { /* malformed metadata — ignore */ }
+	} catch { /* métadonnées malformées, on ignore */ }
 }
 
 function setupMediaSessionHandlers() {
@@ -554,6 +608,7 @@ function preloadNextTrack() {
 	if (!next || next.path === standbyPath) return;
 	if (currentMedia && next.path === currentMedia.path) return;
 	standbyPath = next.path;
+	fetchTags(next.path);   // étiquettes prêtes avant la bascule
 	audioStandby.pause();
 	audioStandby.volume = volume;   // non coupé : il prendra le relais tel quel
 	audioStandby.src = mediaUrl(next.path);
