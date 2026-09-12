@@ -30,6 +30,11 @@ let shuffleOrder = [];
 let viewingPlaylistIdx = -1;
 let volume = 0.8;
 
+// ---- Rafraîchissement global (médias + playlists) ----
+let refreshing = false;
+let refreshTimer = null;
+const REFRESH_MS = 5 * 60 * 1000;
+
 // ---- Cache keys ----
 const CACHE_KEY = "ncmp_tracks_cache";
 const CACHE_TS_KEY = "ncmp_tracks_ts";
@@ -59,7 +64,26 @@ function enableRowActivation(el) {
 }
 const loginScreen = $("#login-screen");
 const appScreen = $("#app-screen");
-const audioPlayer = $("#audio-player");
+
+// ============================================
+//  DEUX LECTEURS ALTERNÉS
+//  La piste suivante est chargée dans le lecteur en attente pendant
+//  que la courante joue. Au changement de piste on bascule d'un
+//  lecteur à l'autre : aucune requête réseau n'est nécessaire à cet
+//  instant précis, moment où Chrome mobile gèle l'onglet puisque
+//  plus aucun média n'est en cours de lecture.
+// ============================================
+let audioPlayer = $("#audio-player");
+let audioStandby = document.createElement("audio");
+audioStandby.id = "audio-player-standby";
+audioPlayer.preload = "auto";
+audioStandby.preload = "auto";
+audioPlayer.parentNode.insertBefore(audioStandby, audioPlayer.nextSibling);
+
+let standbyPath = null;   // piste actuellement chargée dans le lecteur en attente
+let playIntent = false;   // l'utilisateur veut entendre du son
+let uiDirty = false;      // interface à rafraîchir au retour au premier plan
+let playRetries = 0;
 
 // ============================================
 //  API
@@ -89,30 +113,102 @@ function showApp() {
 	loginScreen.classList.remove("active"); appScreen.classList.add("active");
 	$("#user-name").textContent = currentUser; $("#user-dot").textContent = currentUser.charAt(0).toUpperCase();
 	audioPlayer.volume = volume;
+	// 1. Affichage immédiat depuis le stockage local
 	loadPlaylists();
-	loadLibrary();
+	renderPlaylistGrid();
+	const hadCache = loadLibraryFromCache();
+	// 2. Médias et playlists Nextcloud rafraîchis ensemble, en arrière-plan
+	refreshAll({ silent: hadCache });
+	startAutoRefresh();
 }
-function logout() { currentUser = null; localStorage.removeItem("nc_user"); showLogin(); }
+function logout() {
+	currentUser = null;
+	stopAutoRefresh();
+	localStorage.removeItem("nc_user");
+	showLogin();
+}
 
 // ============================================
 //  LIBRARY — cache first, then refresh
 // ============================================
-function loadLibrary() {
-	// 1. Try cache
+function loadLibraryFromCache() {
 	const cached = loadCachedTracks();
-	if (cached && cached.length > 0) {
-		allTracks = cached;
-		filteredTracks = [...allTracks];
-		groupAlbums();
-		renderMediaView();
-		// Show subtle refresh indicator
-		$("#scan-status").classList.remove("hidden");
-		$("#scan-status").querySelector("span").textContent = "Mise à jour en arrière-plan…";
-	}
-
-	// 2. Always fetch fresh data
-	scanLibrary(cached && cached.length > 0);
+	if (!cached || cached.length === 0) return false;
+	allTracks = cached;
+	filteredTracks = [...allTracks];
+	groupAlbums();
+	renderMediaView();
+	return true;
 }
+
+// ============================================
+//  RAFRAÎCHISSEMENT GLOBAL
+//  Médias et playlists Nextcloud sont resynchronisés
+//  dans le même passage, en parallèle.
+// ============================================
+async function refreshAll({ silent = false } = {}) {
+	if (!currentUser || refreshing) return;
+	refreshing = true;
+
+	const scanStatus = $("#scan-status");
+	scanStatus.classList.remove("hidden");
+	scanStatus.querySelector("span").textContent = silent
+		? "Mise à jour en arrière-plan…"
+		: "Analyse de votre bibliothèque…";
+	if (!silent) $("#media-empty").classList.add("hidden");
+
+	try {
+		const [lib, pls] = await Promise.allSettled([
+			scanLibrary(),
+			syncPlaylistsFromNC(),
+		]);
+
+		// Session expirée : logout() a déjà basculé sur l'écran de connexion
+		const expired = [lib, pls].some(r =>
+			r.status === "rejected" && String(r.reason?.message).includes("Session expirée"));
+		if (expired) return;
+
+		if (lib.status === "rejected") {
+			if (silent) {
+				toast("Actualisation échouée, données en cache affichées", "info");
+			} else {
+				toast("Erreur scan : " + lib.reason.message, "error");
+				allTracks = []; filteredTracks = []; renderMediaView();
+				$("#media-empty").classList.remove("hidden");
+			}
+		}
+
+		const libChanged = lib.status === "fulfilled" && lib.value;
+		const plChanged = pls.status === "fulfilled" && pls.value;
+		if (silent && (libChanged || plChanged)) {
+			toast(
+				libChanged && plChanged ? "Bibliothèque et playlists mises à jour"
+					: libChanged ? "Bibliothèque mise à jour"
+						: "Playlists mises à jour",
+				"info"
+			);
+		}
+	} finally {
+		refreshing = false;
+		scanStatus.classList.add("hidden");
+	}
+}
+
+function startAutoRefresh() {
+	stopAutoRefresh();
+	refreshTimer = setInterval(() => {
+		if (!document.hidden) refreshAll({ silent: true });
+	}, REFRESH_MS);
+}
+function stopAutoRefresh() {
+	if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+}
+
+// Retour sur l'onglet ou reconnexion réseau : on resynchronise
+document.addEventListener("visibilitychange", () => {
+	if (!document.hidden && currentUser) refreshAll({ silent: true });
+});
+window.addEventListener("online", () => { if (currentUser) refreshAll({ silent: true }); });
 
 function loadCachedTracks() {
 	try {
@@ -139,50 +235,27 @@ function tracksChanged(oldTracks, newTracks) {
 	return oldPaths !== newPaths;
 }
 
-async function scanLibrary(hadCache = false) {
-	const scanStatus = $("#scan-status");
-	if (!hadCache) {
-		scanStatus.classList.remove("hidden");
-		scanStatus.querySelector("span").textContent = "Analyse de votre bibliothèque…";
-		$("#media-empty").classList.add("hidden");
+// Renvoie true si la bibliothèque a changé. Les erreurs remontent à refreshAll.
+async function scanLibrary() {
+	const data = await api("/files/scan?path=/&depth=10");
+	const freshTracks = data.files || [];
+	let changed = false;
+
+	if (tracksChanged(allTracks, freshTracks)) {
+		allTracks = freshTracks;
+		// Re-applique le filtre de recherche s'il est actif
+		const q = searchInput.value.trim().toLowerCase();
+		filteredTracks = q
+			? allTracks.filter(t => t.name.toLowerCase().includes(q) || t.dir.toLowerCase().includes(q))
+			: [...allTracks];
+		groupAlbums();
+		renderMediaView();
+		changed = true;
 	}
 
-	try {
-		const data = await api("/files/scan?path=/&depth=10");
-		const freshTracks = data.files || [];
-
-		// Compare with current state
-		if (tracksChanged(allTracks, freshTracks)) {
-			allTracks = freshTracks;
-			filteredTracks = [...allTracks];
-			// Re-apply search filter if active
-			const q = searchInput.value.trim().toLowerCase();
-			if (q) {
-				filteredTracks = allTracks.filter(t =>
-					t.name.toLowerCase().includes(q) || t.dir.toLowerCase().includes(q)
-				);
-			}
-			groupAlbums();
-			renderMediaView();
-			if (hadCache) toast("Bibliothèque mise à jour", "info");
-		}
-
-		// Save to cache
-		saveCachedTracks(freshTracks);
-
-		if (allTracks.length === 0) $("#media-empty").classList.remove("hidden");
-	} catch (err) {
-		if (err.message.includes("Session expirée")) return;
-		if (!hadCache) {
-			toast("Erreur scan: " + err.message, "error");
-			allTracks = []; filteredTracks = []; renderMediaView();
-			$("#media-empty").classList.remove("hidden");
-		} else {
-			toast("Actualisation échouée, données en cache affichées", "info");
-		}
-	} finally {
-		scanStatus.classList.add("hidden");
-	}
+	saveCachedTracks(freshTracks);
+	$("#media-empty").classList.toggle("hidden", allTracks.length > 0);
+	return changed;
 }
 
 function groupAlbums() {
@@ -294,13 +367,86 @@ function renderMediaView() {
 // ============================================
 function playTrackDirect(path, name, cover) {
 	currentMedia = { path, name, cover: cover || null };
-	audioPlayer.src = mediaUrl(path);
-	audioPlayer.play().catch(() => { });
+	playIntent = true;
+	playRetries = 0;
+
+	if (standbyPath === path && audioStandby.readyState >= 2) {
+		// La piste est déjà en mémoire tampon : bascule immédiate, zéro réseau
+		const previous = audioPlayer;
+		audioPlayer = audioStandby;
+		audioStandby = previous;
+		standbyPath = null;
+		audioPlayer.volume = volume;
+		if (audioPlayer.currentTime > 0.5) { try { audioPlayer.currentTime = 0; } catch { } }
+		safePlay();
+		audioStandby.pause();
+		audioStandby.removeAttribute("src");
+		audioStandby.load();
+	} else {
+		audioPlayer.volume = volume;
+		audioPlayer.src = mediaUrl(path);
+		safePlay();
+	}
+
 	playerBar.classList.remove("hidden");
+	updateNowPlayingUI();
+	preloadNextTrack();
+}
+
+// play() peut être refusée ou rester bloquée quand l'onglet est en
+// arrière-plan : on retient l'intention et on reprend au retour.
+function safePlay() {
+	const p = audioPlayer.play();
+	if (p && typeof p.catch === "function") p.catch(() => { /* reprise à la remise au premier plan */ });
+}
+
+// Le média a échoué (réseau coupé, requête avortée par le navigateur)
+function handlePlaybackError() {
+	if (!currentMedia || !playIntent) return;
+	if (playRetries < 2) {
+		playRetries++;
+		audioPlayer.src = mediaUrl(currentMedia.path);
+		safePlay();
+		return;
+	}
+	if (!document.hidden) toast("Lecture impossible : " + currentMedia.name, "error");
+}
+
+// Rafraîchissement de l'interface différé tant que l'onglet est caché :
+// une image ou un appel API lancé à ce moment est avorté par Chrome et
+// c'est ce qui produisait la pochette cassée au retour.
+function updateNowPlayingUI() {
+	if (document.hidden) { uiDirty = true; updateMediaSessionMetadata(); return; }
+	uiDirty = false;
 	updateBarInfo(); updatePlayIcons(); highlightPlaying();
 }
 
+document.addEventListener("visibilitychange", () => {
+	if (document.hidden) return;
+	if (uiDirty) updateNowPlayingUI();
+	// La bascule de piste a pu être avortée pendant le gel de l'onglet
+	if (playIntent && audioPlayer.paused && !audioPlayer.ended) {
+		if (audioPlayer.error || !audioPlayer.src) handlePlaybackError();
+		else safePlay();
+	}
+	updatePlayIcons();
+});
+
 const playerBar = $("#player-bar");
+
+const COVER_SVG = (size, opacity) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" opacity="${opacity}" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`;
+
+// L'image n'est insérée qu'une fois chargée : en cas d'échec le SVG
+// de repli reste affiché, jamais l'icône d'image cassée du navigateur.
+function setCover(el, coverPath, size, opacity) {
+	el.innerHTML = COVER_SVG(size, opacity);
+	if (!coverPath) return;
+	const img = new Image();
+	img.alt = "";
+	img.decoding = "async";
+	img.addEventListener("load", () => { el.replaceChildren(img); });
+	img.src = mediaUrl(coverPath);
+}
 
 function updateBarInfo() {
 	if (!currentMedia) return;
@@ -309,17 +455,12 @@ function updateBarInfo() {
 	$("#drawer-track-name").textContent = currentMedia.name;
 	$("#drawer-track-path").textContent = currentMedia.path;
 
-	const coverHtml = currentMedia.cover
-		? `<img src="${mediaUrl(currentMedia.cover)}" alt="">`
-		: `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" opacity="0.4"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`;
-	$("#pb-cover").innerHTML = coverHtml;
+	setCover($("#pb-cover"), currentMedia.cover, 18, "0.4");
+	setCover($("#drawer-cover"), currentMedia.cover, 48, "0.2");
 
-	const drawerCoverHtml = currentMedia.cover
-		? `<img src="${mediaUrl(currentMedia.cover)}" alt="">`
-		: `<svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor" opacity="0.2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`;
-	$("#drawer-cover").innerHTML = drawerCoverHtml;
-
-	showDrawerMeta(currentMedia.path, currentMedia.name);
+	// Appel API repoussé à l'ouverture du tiroir : inutile et fragile
+	// quand la page est en arrière-plan
+	if (!$("#drawer").classList.contains("hidden")) showDrawerMeta(currentMedia.path, currentMedia.name);
 	updateMediaSessionMetadata();
 }
 
@@ -337,12 +478,11 @@ function updateMediaSessionMetadata() {
 	const title = currentMedia.name.replace(/\.[^/.]+$/, "");
 	const dirParts = currentMedia.path.split("/").filter(Boolean);
 	const album = dirParts.length > 1 ? dirParts[dirParts.length - 2] : "Nextcloud";
+	// Une seule entree, sans "type" fige : declarer image/jpeg pour une
+	// pochette PNG fait rejeter l'illustration par Chrome, d'ou la
+	// vignette manquante dans la notification.
 	const artwork = currentMedia.cover
-		? [96, 128, 192, 256, 384, 512].map(size => ({
-			src: mediaUrl(currentMedia.cover),
-			sizes: `${size}x${size}`,
-			type: "image/jpeg",
-		}))
+		? [{ src: mediaUrl(currentMedia.cover), sizes: "512x512" }]
 		: [];
 	try {
 		navigator.mediaSession.metadata = new MediaMetadata({
@@ -359,9 +499,9 @@ function setupMediaSessionHandlers() {
 	const setHandler = (action, fn) => {
 		try { navigator.mediaSession.setActionHandler(action, fn); } catch { /* action unsupported on this browser */ }
 	};
-	setHandler("play", () => { audioPlayer.play().catch(() => { }); });
-	setHandler("pause", () => audioPlayer.pause());
-	setHandler("stop", () => audioPlayer.pause());
+	setHandler("play", () => { playIntent = true; safePlay(); });
+	setHandler("pause", () => { playIntent = false; audioPlayer.pause(); });
+	setHandler("stop", () => { playIntent = false; audioPlayer.pause(); });
 	setHandler("previoustrack", () => playPrevTrack());
 	setHandler("nexttrack", () => playNextTrack());
 	setHandler("seekbackward", (details) => {
@@ -389,16 +529,11 @@ function updateMediaSessionPositionState() {
 }
 
 // ============================================
-//  NEXT-TRACK PRELOADING — warms the browser's network/HTTP
-//  cache for the upcoming track so the switch on "ended" is
-//  near-instant instead of waiting on a fresh fetch, which is
-//  the gap most likely to get the background tab suspended.
+//  PRÉCHARGEMENT DE LA PISTE SUIVANTE
+//  Elle est chargée dans le lecteur en attente, pas seulement dans le
+//  cache HTTP : la bascule ne dépend donc ni du réseau ni des en-têtes
+//  de cache renvoyés par Nextcloud.
 // ============================================
-const preloadAudio = new Audio();
-preloadAudio.preload = "auto";
-preloadAudio.muted = true;
-preloadAudio.volume = 0;
-
 function peekNextTrack() {
 	if (activePlaylistIdx < 0 || !playlists[activePlaylistIdx]) return null;
 	const pl = playlists[activePlaylistIdx];
@@ -412,13 +547,17 @@ function peekNextTrack() {
 }
 
 function preloadNextTrack() {
+	// Seulement quand la lecture suit réellement la playlist active
+	const pl = playlists[activePlaylistIdx];
+	if (!pl || !currentMedia || pl.tracks[playingTrackIdx]?.path !== currentMedia.path) return;
 	const next = peekNextTrack();
-	if (!next) return;
-	const url = mediaUrl(next.path);
-	if (preloadAudio.src !== url) {
-		preloadAudio.src = url;
-		preloadAudio.load();
-	}
+	if (!next || next.path === standbyPath) return;
+	if (currentMedia && next.path === currentMedia.path) return;
+	standbyPath = next.path;
+	audioStandby.pause();
+	audioStandby.volume = volume;   // non coupé : il prendra le relais tel quel
+	audioStandby.src = mediaUrl(next.path);
+	audioStandby.load();
 }
 
 function updatePlayIcons() {
@@ -433,7 +572,8 @@ function updatePlayIcons() {
 
 function togglePlay() {
 	if (!audioPlayer.src) return;
-	audioPlayer.paused ? audioPlayer.play() : audioPlayer.pause();
+	if (audioPlayer.paused) { playIntent = true; safePlay(); }
+	else { playIntent = false; audioPlayer.pause(); }
 	updatePlayIcons();
 }
 
@@ -445,38 +585,63 @@ function highlightPlaying() {
 	if (viewingPlaylistIdx >= 0) renderDetailTracks();
 }
 
-// Time / progress
-audioPlayer.addEventListener("timeupdate", () => {
-	if (!audioPlayer.duration) return;
-	const pct = (audioPlayer.currentTime / audioPlayer.duration) * 100;
-	$("#pb-progress-fill").style.width = pct + "%";
-	$("#seek-bar").value = pct;
-	$("#time-current").textContent = fmtTime(audioPlayer.currentTime);
-	$("#time-total").textContent = fmtTime(audioPlayer.duration);
-	const timeLabel = `${fmtTime(audioPlayer.currentTime)} sur ${fmtTime(audioPlayer.duration)}`;
-	const progressBar = $("#pb-progress-bar");
-	progressBar.setAttribute("aria-valuenow", Math.round(pct));
-	progressBar.setAttribute("aria-valuetext", timeLabel);
-	$("#seek-bar").setAttribute("aria-valuetext", timeLabel);
-	updateMediaSessionPositionState();
-});
-audioPlayer.addEventListener("play", () => {
-	updatePlayIcons();
-	if (hasMediaSession) navigator.mediaSession.playbackState = "playing";
-});
-audioPlayer.addEventListener("pause", () => {
-	updatePlayIcons();
-	if (hasMediaSession) navigator.mediaSession.playbackState = "paused";
-});
-audioPlayer.addEventListener("loadedmetadata", updateMediaSessionPositionState);
-// Preload the next track a bit before the current one ends, so the
-// switch on "ended" doesn't have to wait on a fresh network fetch —
-// that wait is what let Android suspend the background tab.
-audioPlayer.addEventListener("timeupdate", () => {
-	if (!audioPlayer.duration || !isFinite(audioPlayer.duration)) return;
-	if (audioPlayer.duration - audioPlayer.currentTime <= 15) preloadNextTrack();
-});
-audioPlayer.addEventListener("ended", () => playNextTrack());
+// Les deux lecteurs partagent les mêmes gestionnaires : seul celui qui
+// est courant à l'instant T met à jour l'interface et enchaîne.
+function wireDeck(el) {
+	const isCurrent = () => el === audioPlayer;
+
+	el.addEventListener("timeupdate", () => {
+		if (!isCurrent() || !el.duration || !isFinite(el.duration)) return;
+		updateMediaSessionPositionState();
+		// Filet de sécurité si la file a changé depuis le début de la piste
+		if (el.duration - el.currentTime <= 20) preloadNextTrack();
+		if (document.hidden) return;   // inutile de peindre une interface invisible
+		const pct = (el.currentTime / el.duration) * 100;
+		$("#pb-progress-fill").style.width = pct + "%";
+		$("#seek-bar").value = pct;
+		$("#time-current").textContent = fmtTime(el.currentTime);
+		$("#time-total").textContent = fmtTime(el.duration);
+		const timeLabel = `${fmtTime(el.currentTime)} sur ${fmtTime(el.duration)}`;
+		const progressBar = $("#pb-progress-bar");
+		progressBar.setAttribute("aria-valuenow", Math.round(pct));
+		progressBar.setAttribute("aria-valuetext", timeLabel);
+		$("#seek-bar").setAttribute("aria-valuetext", timeLabel);
+	});
+
+	el.addEventListener("playing", () => {
+		if (!isCurrent()) return;
+		playRetries = 0;
+		// La piste suivante est mise en tampon dès le début de la lecture,
+		// et non quinze secondes avant la fin : en arrière-plan les timers
+		// sont bridés et ce préchargement tardif n'avait pas le temps
+		// d'aboutir.
+		preloadNextTrack();
+	});
+
+	el.addEventListener("play", () => {
+		if (!isCurrent()) return;
+		playIntent = true;
+		updatePlayIcons();
+		if (hasMediaSession) navigator.mediaSession.playbackState = "playing";
+	});
+
+	el.addEventListener("pause", () => {
+		if (!isCurrent()) return;
+		updatePlayIcons();
+		if (hasMediaSession) navigator.mediaSession.playbackState = "paused";
+	});
+
+	el.addEventListener("loadedmetadata", () => { if (isCurrent()) updateMediaSessionPositionState(); });
+	el.addEventListener("ended", () => { if (isCurrent()) playNextTrack(); });
+	el.addEventListener("error", () => { if (isCurrent()) handlePlaybackError(); });
+}
+wireDeck(audioPlayer);
+wireDeck(audioStandby);
+
+// Aucune image cassée dans l'interface : une pochette qui échoue disparaît
+document.addEventListener("error", e => {
+	if (e.target.tagName === "IMG") e.target.style.visibility = "hidden";
+}, true);
 
 $("#seek-bar").addEventListener("input", function () {
 	if (!audioPlayer.duration) return;
@@ -502,6 +667,7 @@ $("#pb-progress-bar").addEventListener("keydown", e => {
 function setVolume(v) {
 	volume = Math.max(0, Math.min(1, v));
 	audioPlayer.volume = volume;
+	audioStandby.volume = volume;
 	const pct = Math.round(volume * 100);
 	$("#volume-slider").value = pct;
 	$("#drawer-volume").value = pct;
@@ -552,7 +718,6 @@ function doPlayTrack(idx) {
 	const t = pl.tracks[idx];
 	const found = allTracks.find(at => at.path === t.path);
 	playTrackDirect(t.path, t.name, found?.cover || null);
-	preloadNextTrack();
 }
 function startPlaylist(plIdx, shuffle) {
 	activePlaylistIdx = plIdx;
@@ -580,31 +745,126 @@ function toggleShuffle() {
 //  PLAYLISTS — storage
 // ============================================
 const PL_KEY = "ncmp_playlists";
+
+// Chargement local uniquement : la synchro Nextcloud passe par refreshAll()
 function loadPlaylists() {
 	try { playlists = JSON.parse(localStorage.getItem(PL_KEY) || "[]"); } catch { playlists = []; }
 	if (playlists.length === 0) playlists.push({ name: "Ma playlist", tracks: [] });
 	activePlaylistIdx = 0;
-	importPlaylistsFromNC();
 }
 function savePlaylists() { localStorage.setItem(PL_KEY, JSON.stringify(playlists)); }
 
-async function importPlaylistsFromNC() {
+// Playlists Nextcloud supprimées localement : à ne pas réimporter à chaque synchro
+const PL_DELETED_KEY = "ncmp_playlists_deleted";
+function loadDeletedNC() {
+	try { return new Set(JSON.parse(localStorage.getItem(PL_DELETED_KEY) || "[]")); } catch { return new Set(); }
+}
+function markDeletedNC(name) {
+	const s = loadDeletedNC(); s.add(name);
+	localStorage.setItem(PL_DELETED_KEY, JSON.stringify([...s]));
+}
+
+// Nom du fichier .m3u côté Nextcloud : peut différer du nom local après renommage
+const ncKey = pl => pl.ncName || pl.name;
+const sameTracks = (a, b) => a.length === b.length && a.every((t, i) => t.path === b[i].path);
+
+function removePlaylistAt(i) {
+	playlists.splice(i, 1);
+	if (activePlaylistIdx === i) { activePlaylistIdx = -1; playingTrackIdx = -1; }
+	else if (activePlaylistIdx > i) activePlaylistIdx--;
+	if (viewingPlaylistIdx === i) viewingPlaylistIdx = -1;
+	else if (viewingPlaylistIdx > i) viewingPlaylistIdx--;
+}
+
+// Le contenu d'une playlist en cours de lecture a changé : on retrouve
+// la piste courante par son chemin pour ne pas sauter n'importe où.
+function reindexPlaying(plIdx, oldTracks, newTracks) {
+	if (activePlaylistIdx !== plIdx || playingTrackIdx < 0) return;
+	const cur = oldTracks[playingTrackIdx];
+	playingTrackIdx = cur ? newTracks.findIndex(t => t.path === cur.path) : -1;
+}
+
+/**
+ * Synchronise les playlists avec le dossier /Playlists de Nextcloud :
+ * nouvelles playlists importées, contenu des playlists déjà importées
+ * mis à jour, playlists supprimées côté serveur retirées.
+ * Les playlists modifiées localement et pas encore téléversées (dirty)
+ * ne sont jamais écrasées. Renvoie true si quelque chose a changé.
+ */
+async function syncPlaylistsFromNC() {
+	let data;
 	try {
-		const data = await api(`/files?path=${encodeURIComponent("/Playlists")}`);
-		const m3us = (data.files || []).filter(f => f.name.endsWith(".m3u"));
-		for (const f of m3us) {
-			const plName = f.name.replace(/\.m3u$/, "");
-			if (playlists.some(p => p.name === plName && p.imported)) continue;
-			try {
-				const res = await fetch(mediaUrl(f.path));
-				const text = await res.text();
-				const tracks = parseM3U(text);
-				if (tracks.length > 0) playlists.push({ name: plName, tracks, imported: true });
-			} catch { }
+		data = await api(`/files?path=${encodeURIComponent("/Playlists")}`);
+	} catch (err) {
+		if (String(err.message).includes("Session expirée")) throw err;
+		return false; // dossier absent ou serveur injoignable : on garde le local
+	}
+
+	const m3us = (data.files || []).filter(f => f.name.endsWith(".m3u"));
+	const deleted = loadDeletedNC();
+	const remoteNames = new Set();
+	let changed = false;
+
+	for (const f of m3us) {
+		const plName = f.name.replace(/\.m3u$/, "");
+		if (deleted.has(plName)) continue;
+		remoteNames.add(plName);
+
+		let tracks;
+		try {
+			// cache: "no-store" — sinon le navigateur resert l'ancien .m3u
+			const res = await fetch(mediaUrl(f.path), { cache: "no-store", headers: hdrs() });
+			if (!res.ok) continue;
+			tracks = parseM3U(await res.text());
+		} catch { continue; }
+		if (tracks.length === 0) continue;
+
+		const idx = playlists.findIndex(p => p.imported && ncKey(p) === plName);
+		if (idx < 0) {
+			playlists.push({ name: plName, ncName: plName, tracks, imported: true, dirty: false });
+			changed = true;
+			continue;
 		}
-		savePlaylists();
-	} catch { }
+
+		const pl = playlists[idx];
+		if (pl.dirty) continue; // modifications locales non téléversées : priorité au local
+		if (sameTracks(pl.tracks, tracks)) continue;
+
+		const oldTracks = pl.tracks;
+		pl.tracks = tracks;
+		reindexPlaying(idx, oldTracks, tracks);
+		if (shuffleOn && activePlaylistIdx === idx) buildShuffleOrder();
+		changed = true;
+	}
+
+	// Playlists importées qui ont disparu du serveur
+	for (let i = playlists.length - 1; i >= 0; i--) {
+		const pl = playlists[i];
+		if (pl.imported && !pl.dirty && !remoteNames.has(ncKey(pl))) {
+			removePlaylistAt(i);
+			changed = true;
+		}
+	}
+
+	if (playlists.length === 0) playlists.push({ name: "Ma playlist", tracks: [] });
+	if (activePlaylistIdx < 0 || activePlaylistIdx >= playlists.length) activePlaylistIdx = 0;
+
+	if (changed) { savePlaylists(); refreshPlaylistUI(); }
+	return changed;
+}
+
+// Réaffiche ce que l'utilisateur a sous les yeux après une synchro
+function refreshPlaylistUI() {
+	if (viewingPlaylistIdx >= 0 && playlists[viewingPlaylistIdx]) {
+		const pl = playlists[viewingPlaylistIdx];
+		$("#detail-meta").textContent = `${pl.tracks.length} piste${pl.tracks.length > 1 ? "s" : ""}${pl.imported ? " · Importée depuis Nextcloud" : ""}`;
+		renderDetailTracks();
+	} else if (viewingPlaylistIdx < 0 && currentView === "playlists") {
+		$("#playlist-detail").classList.add("hidden");
+		$("#playlist-grid").classList.remove("hidden");
+	}
 	renderPlaylistGrid();
+	renderDrawerQueue();
 }
 
 function parseM3U(text) {
@@ -622,7 +882,7 @@ function addToActivePlaylist(path, name) {
 	if (activePlaylistIdx < 0) activePlaylistIdx = 0;
 	const pl = playlists[activePlaylistIdx];
 	if (pl.tracks.some(t => t.path === path)) { toast("Déjà dans la playlist", "info"); return; }
-	pl.tracks.push({ path, name }); savePlaylists();
+	pl.tracks.push({ path, name }); pl.dirty = true; savePlaylists();
 	toast(`"${name}" → ${pl.name}`, "success");
 	if (viewingPlaylistIdx === activePlaylistIdx) renderDetailTracks();
 }
@@ -634,7 +894,7 @@ async function savePlaylistToNC() {
 	try {
 		await api("/files/mkdir", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: "/Playlists" }) }).catch(() => { });
 		await fetch(`${API}/files/upload?path=${encodeURIComponent(`/Playlists/${pl.name}.m3u`)}`, { method: "PUT", headers: { "X-NC-User": currentUser }, body: m3u });
-		pl.imported = true; savePlaylists();
+		pl.imported = true; pl.ncName = pl.name; pl.dirty = false; savePlaylists();
 		toast(`Sauvegardée sur Nextcloud`, "success");
 	} catch (err) { toast("Erreur: " + err.message, "error"); }
 }
@@ -688,7 +948,7 @@ function renderDetailTracks() {
 	});
 	container.querySelectorAll(".dt-remove").forEach(btn => btn.addEventListener("click", e => {
 		e.stopPropagation(); const idx = parseInt(btn.dataset.idx);
-		pl.tracks.splice(idx, 1);
+		pl.tracks.splice(idx, 1); pl.dirty = true;
 		if (activePlaylistIdx === viewingPlaylistIdx) { if (playingTrackIdx === idx) playingTrackIdx = -1; else if (playingTrackIdx > idx) playingTrackIdx--; }
 		savePlaylists(); $("#detail-meta").textContent = `${pl.tracks.length} piste${pl.tracks.length > 1 ? "s" : ""}`; renderDetailTracks();
 	}));
@@ -718,6 +978,7 @@ function drawerKeydown(e) {
 function openDrawer() {
 	drawerReturnFocus = document.activeElement;
 	$("#drawer").classList.remove("hidden");
+	if (currentMedia) showDrawerMeta(currentMedia.path, currentMedia.name);
 	$("#btn-expand").setAttribute("aria-expanded", "true");
 	document.addEventListener("keydown", drawerKeydown);
 	// Move focus into the dialog, per the standard dialog pattern.
@@ -796,6 +1057,9 @@ $("#btn-collapse").addEventListener("click", closeDrawer);
 $("#drawer-overlay").addEventListener("click", closeDrawer);
 $("#btn-add-queue").addEventListener("click", () => { if (currentMedia) addToActivePlaylist(currentMedia.path, currentMedia.name); });
 
+// Optionnel : <button id="btn-refresh"> dans le HTML pour forcer une synchro
+$("#btn-refresh")?.addEventListener("click", () => refreshAll({ silent: true }));
+
 $("#btn-new-playlist").addEventListener("click", () => {
 	const name = prompt("Nom de la playlist :"); if (!name) return;
 	playlists.push({ name, tracks: [] }); savePlaylists(); renderPlaylistGrid();
@@ -811,6 +1075,8 @@ $("#btn-save-nc").addEventListener("click", savePlaylistToNC);
 $("#btn-delete-playlist").addEventListener("click", () => {
 	if (viewingPlaylistIdx < 0) return;
 	if (!confirm(`Supprimer "${playlists[viewingPlaylistIdx].name}" ?`)) return;
+	const removed = playlists[viewingPlaylistIdx];
+	if (removed.imported) markDeletedNC(ncKey(removed));
 	playlists.splice(viewingPlaylistIdx, 1);
 	if (activePlaylistIdx === viewingPlaylistIdx) { activePlaylistIdx = -1; playingTrackIdx = -1; }
 	else if (activePlaylistIdx > viewingPlaylistIdx) activePlaylistIdx--;
@@ -822,7 +1088,9 @@ $("#btn-delete-playlist").addEventListener("click", () => {
 });
 $("#detail-name").addEventListener("change", function () {
 	if (viewingPlaylistIdx < 0) return;
-	playlists[viewingPlaylistIdx].name = this.value.trim() || "Sans nom"; savePlaylists();
+	playlists[viewingPlaylistIdx].name = this.value.trim() || "Sans nom";
+	playlists[viewingPlaylistIdx].dirty = true;
+	savePlaylists();
 });
 
 document.addEventListener("keydown", e => {

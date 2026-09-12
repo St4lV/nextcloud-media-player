@@ -55,19 +55,24 @@ self.addEventListener("fetch", (e) => {
 		return;
 	}
 
-	// App shell & static assets → cache first, fallback to network
+	// Coquille applicative et ressources statiques : cache d'abord,
+	// rafraichi en arriere-plan.
 	e.respondWith(
 		caches.match(e.request).then((cached) => {
 			const fetchPromise = fetch(e.request)
 				.then((res) => {
-					// Update cache with fresh version
 					if (res.ok) {
 						const clone = res.clone();
 						caches.open(CACHE_NAME).then((cache) => cache.put(e.request, clone));
 					}
 					return res;
 				})
-				.catch(() => cached); // Offline → use cache
+				.catch(() => {
+					// Hors ligne : on ne renvoie jamais undefined, sinon
+					// respondWith leve une erreur reseau opaque
+					if (cached) return cached;
+					return new Response("", { status: 504, statusText: "Hors ligne" });
+				});
 
 			return cached || fetchPromise;
 		})

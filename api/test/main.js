@@ -316,23 +316,135 @@ router.get("/files/stat", authMiddleware, async (req, res) => {
 	}
 });
 
+// ============================================================
+//  CACHE DE MÉTADONNÉES
+//  Chrome émet plusieurs requêtes Range par piste. Sans ce cache,
+//  chacune déclenche un PROPFIND WebDAV supplémentaire vers
+//  Nextcloud avant même de commencer à transmettre le moindre octet.
+// ============================================================
+
+const statCache = new Map();
+const STAT_TTL = 30_000;
+
+async function cachedStat(webdav, userId, filePath) {
+	const key = `${userId}:${filePath}`;
+	const hit = statCache.get(key);
+	if (hit && Date.now() < hit.expires) return hit.stat;
+	const stat = await webdav.stat(filePath);
+	statCache.set(key, { stat, expires: Date.now() + STAT_TTL });
+	return stat;
+}
+
+function invalidateStat(userId, filePath) {
+	statCache.delete(`${userId}:${filePath}`);
+}
+
+// Purge périodique pour éviter que la Map ne grossisse indéfiniment
+setInterval(() => {
+	const now = Date.now();
+	for (const [key, entry] of statCache) if (now >= entry.expires) statCache.delete(key);
+}, STAT_TTL).unref?.();
+
+// ============================================================
+//  PARSING DU RANGE (RFC 7233, une seule plage)
+//  Renvoie { start, end } ou null si l'en-tête est absent ou
+//  invalide, "unsatisfiable" si la plage sort du fichier.
+// ============================================================
+
+function parseRange(header, size) {
+	if (!header || size <= 0) return null;
+	const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+	if (!match) return null;
+
+	let start, end;
+	if (match[1] === "") {
+		// Forme suffixe : bytes=-500 (les 500 derniers octets)
+		const suffix = parseInt(match[2], 10);
+		if (!Number.isFinite(suffix) || suffix <= 0) return "unsatisfiable";
+		start = Math.max(0, size - suffix);
+		end = size - 1;
+	} else {
+		start = parseInt(match[1], 10);
+		end = match[2] === "" ? size - 1 : parseInt(match[2], 10);
+	}
+
+	if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+	if (start >= size || start > end) return "unsatisfiable";
+	return { start, end: Math.min(end, size - 1) };
+}
+
 router.get("/files/download", authMiddleware, async (req, res) => {
 	const filePath = req.query.path;
 	if (!filePath) return res.status(400).json({ error: "Paramètre path requis" });
+
+	let stat;
 	try {
-		const stat = await req.webdav.stat(filePath);
-		const stream = req.webdav.createReadStream(filePath);
-		res.set("Content-Type", stat.mime || "application/octet-stream");
-		// RFC 5987: encode filename for Unicode support (☆, 灰, etc.)
-		const safeAscii = stat.basename.replace(/[^\x20-\x7E]/g, "_");
-		const encoded = encodeURIComponent(stat.basename).replace(/'/g, "%27");
-		res.set("Content-Disposition", `inline; filename="${safeAscii}"; filename*=UTF-8''${encoded}`);
-		if (stat.size) res.set("Content-Length", String(stat.size));
-		res.set("Accept-Ranges", "bytes");
-		stream.pipe(res);
+		stat = await cachedStat(req.webdav, req.ncUser, filePath);
 	} catch (err) {
-		res.status(404).json({ error: "Fichier non trouvé", details: err.message });
+		return res.status(404).json({ error: "Fichier non trouvé", details: err.message });
 	}
+
+	const size = Number(stat.size) || 0;
+	const etag = stat.etag ? `"${String(stat.etag).replace(/"/g, "")}"` : null;
+
+	res.set("Content-Type", stat.mime || "application/octet-stream");
+	// RFC 5987 : encodage du nom pour l'Unicode (☆, 灰, etc.)
+	const safeAscii = stat.basename.replace(/[^\x20-\x7E]/g, "_");
+	const encoded = encodeURIComponent(stat.basename).replace(/'/g, "%27");
+	res.set("Content-Disposition", `inline; filename="${safeAscii}"; filename*=UTF-8''${encoded}`);
+	res.set("Accept-Ranges", "bytes");
+
+	// Sans ces en-têtes, le navigateur ne conserve rien et retélécharge
+	// la piste entière à chaque lecture ou reprise.
+	res.set("Cache-Control", "private, max-age=86400");
+	if (etag) res.set("ETag", etag);
+	if (stat.lastmod) {
+		const d = new Date(stat.lastmod);
+		if (!isNaN(d)) res.set("Last-Modified", d.toUTCString());
+	}
+
+	// Revalidation : rien à renvoyer si le client a déjà la bonne version
+	const ifNoneMatch = req.headers["if-none-match"];
+	if (etag && ifNoneMatch && ifNoneMatch.split(",").some(v => v.trim() === etag)) {
+		return res.status(304).end();
+	}
+
+	// If-Range : si la version a changé, la plage demandée n'a plus de
+	// sens, on repart du fichier complet.
+	const ifRange = req.headers["if-range"];
+	const rangeStillValid = !ifRange || (etag && ifRange.trim() === etag);
+	const range = rangeStillValid ? parseRange(req.headers.range, size) : null;
+
+	if (range === "unsatisfiable") {
+		return res.status(416).set("Content-Range", `bytes */${size}`).end();
+	}
+
+	let stream;
+	try {
+		if (range) {
+			res.status(206);
+			res.set("Content-Range", `bytes ${range.start}-${range.end}/${size}`);
+			res.set("Content-Length", String(range.end - range.start + 1));
+			stream = req.webdav.createReadStream(filePath, { range: { start: range.start, end: range.end } });
+		} else {
+			res.status(200);
+			if (size) res.set("Content-Length", String(size));
+			stream = req.webdav.createReadStream(filePath);
+		}
+	} catch (err) {
+		return res.status(500).json({ error: "Lecture impossible", details: err.message });
+	}
+
+	// Une coupure réseau côté mobile laissait la réponse et le flux WebDAV
+	// ouverts indéfiniment.
+	stream.on("error", (err) => {
+		console.error(`[Download] Flux interrompu pour ${filePath}:`, err.message);
+		if (!res.headersSent) res.status(502).json({ error: "Lecture interrompue" });
+		else res.destroy(err);
+	});
+	res.on("close", () => stream.destroy());
+
+	stream.pipe(res);
 });
 
 router.put("/files/upload", authMiddleware, async (req, res) => {
@@ -343,6 +455,7 @@ router.put("/files/upload", authMiddleware, async (req, res) => {
 		for await (const chunk of req) chunks.push(chunk);
 		const buffer = Buffer.concat(chunks);
 		await req.webdav.putFileContents(filePath, buffer, { overwrite: req.query.overwrite !== "false" });
+		invalidateStat(req.ncUser, filePath);
 		res.json({ success: true, path: filePath });
 	} catch (err) {
 		res.status(500).json({ error: "Échec upload", details: err.message });
@@ -365,6 +478,7 @@ router.delete("/files", authMiddleware, async (req, res) => {
 	if (!filePath) return res.status(400).json({ error: "Paramètre path requis" });
 	try {
 		await req.webdav.deleteFile(filePath);
+		invalidateStat(req.ncUser, filePath);
 		res.json({ success: true, deleted: filePath });
 	} catch (err) {
 		res.status(500).json({ error: "Échec suppression", details: err.message });
@@ -376,6 +490,8 @@ router.patch("/files/move", authMiddleware, async (req, res) => {
 	if (!from || !to) return res.status(400).json({ error: "Paramètres from et to requis" });
 	try {
 		await req.webdav.moveFile(from, to);
+		invalidateStat(req.ncUser, from);
+		invalidateStat(req.ncUser, to);
 		res.json({ success: true, from, to });
 	} catch (err) {
 		res.status(500).json({ error: "Échec déplacement", details: err.message });
@@ -387,6 +503,7 @@ router.post("/files/copy", authMiddleware, async (req, res) => {
 	if (!from || !to) return res.status(400).json({ error: "Paramètres from et to requis" });
 	try {
 		await req.webdav.copyFile(from, to);
+		invalidateStat(req.ncUser, to);
 		res.json({ success: true, from, to });
 	} catch (err) {
 		res.status(500).json({ error: "Échec copie", details: err.message });
