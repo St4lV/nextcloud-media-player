@@ -37,6 +37,26 @@ const CACHE_TS_KEY = "ncmp_tracks_ts";
 // ---- DOM ----
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
+
+// ============================================
+//  ACCESSIBILITY HELPERS
+// ============================================
+// Rows built as <div>s (track/playlist/queue rows) are clickable but
+// not natively focusable or operable by keyboard. This makes them act
+// like a button (Tab to focus, Enter/Space to activate) while leaving
+// any real <button> nested inside them (e.g. "add" / "remove") on its
+// own normal tab stop and unaffected by the row's own key handling.
+function enableRowActivation(el) {
+	if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "0");
+	if (!el.hasAttribute("role")) el.setAttribute("role", "button");
+	el.addEventListener("keydown", e => {
+		if (e.target !== el) return; // let nested buttons handle their own Enter/Space
+		if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+			e.preventDefault();
+			el.click();
+		}
+	});
+}
 const loginScreen = $("#login-screen");
 const appScreen = $("#app-screen");
 const audioPlayer = $("#audio-player");
@@ -218,34 +238,36 @@ function renderMediaView() {
 				? `<img src="${mediaUrl(t.cover)}" loading="lazy" alt="">`
 				: `<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" opacity=".15"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>`;
 
-			return `<div class="track-row${isPlaying ? " playing" : ""}" data-path="${t.path}" data-name="${t.name}" data-cover="${t.cover || ""}">
-				<span class="track-num">${ti + 1}</span>
-				<div class="track-cover">${trackCover}</div>
+			return `<div class="track-row${isPlaying ? " playing" : ""}" data-path="${t.path}" data-name="${t.name}" data-cover="${t.cover || ""}"
+				aria-label="Lire ${t.name}"${isPlaying ? ' aria-current="true"' : ""}>
+				<span class="track-num" aria-hidden="true">${ti + 1}</span>
+				<div class="track-cover" aria-hidden="true">${trackCover}</div>
 				<span class="track-name">${t.name}</span>
-				<span class="track-size">${fmtSize(t.size)}</span>
-				<button class="track-add" data-path="${t.path}" data-name="${t.name}" title="Ajouter à la playlist">
-					<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+				<span class="track-size" aria-hidden="true">${fmtSize(t.size)}</span>
+				<button class="track-add" data-path="${t.path}" data-name="${t.name}" title="Ajouter à la playlist" aria-label="Ajouter ${t.name} à la playlist">
+					<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14"/></svg>
 				</button>
 			</div>`;
 		}).join("");
 
 		return `<div class="album-group" style="animation-delay:${ai * 40}ms">
 			<div class="album-header">
-				<div class="album-cover">${coverHtml}</div>
+				<div class="album-cover" aria-hidden="true">${coverHtml}</div>
 				<div>
 					<div class="album-name">${dirName}</div>
 					<div class="album-count">${album.tracks.length} piste${album.tracks.length > 1 ? "s" : ""}</div>
 				</div>
-				<button class="icon-btn album-play" data-dir="${album.dir}" title="Lire tout">
-					<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+				<button class="icon-btn album-play" data-dir="${album.dir}" title="Lire tout" aria-label="Lire l'album ${dirName}">
+					<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><polygon points="5 3 19 12 5 21 5 3"/></svg>
 				</button>
 			</div>
-			<div class="track-list">${tracksHtml}</div>
+			<div class="track-list" role="list">${tracksHtml}</div>
 		</div>`;
 	}).join("");
 
 	// Events
 	container.querySelectorAll(".track-row").forEach(row => {
+		enableRowActivation(row);
 		row.addEventListener("click", e => {
 			if (e.target.closest(".track-add")) return;
 			playTrackDirect(row.dataset.path, row.dataset.name, row.dataset.cover);
@@ -298,6 +320,105 @@ function updateBarInfo() {
 	$("#drawer-cover").innerHTML = drawerCoverHtml;
 
 	showDrawerMeta(currentMedia.path, currentMedia.name);
+	updateMediaSessionMetadata();
+}
+
+// ============================================
+//  MEDIA SESSION — lock screen / notification controls
+//  Required by Chrome/Android to treat this tab as an active
+//  media session: without it, the background page can be
+//  suspended right when a track ends and the next one isn't
+//  already buffered, which is why playback was stopping.
+// ============================================
+const hasMediaSession = "mediaSession" in navigator;
+
+function updateMediaSessionMetadata() {
+	if (!hasMediaSession || !currentMedia) return;
+	const title = currentMedia.name.replace(/\.[^/.]+$/, "");
+	const dirParts = currentMedia.path.split("/").filter(Boolean);
+	const album = dirParts.length > 1 ? dirParts[dirParts.length - 2] : "Nextcloud";
+	const artwork = currentMedia.cover
+		? [96, 128, 192, 256, 384, 512].map(size => ({
+			src: mediaUrl(currentMedia.cover),
+			sizes: `${size}x${size}`,
+			type: "image/jpeg",
+		}))
+		: [];
+	try {
+		navigator.mediaSession.metadata = new MediaMetadata({
+			title,
+			artist: album,
+			album,
+			artwork,
+		});
+	} catch { /* malformed metadata — ignore */ }
+}
+
+function setupMediaSessionHandlers() {
+	if (!hasMediaSession) return;
+	const setHandler = (action, fn) => {
+		try { navigator.mediaSession.setActionHandler(action, fn); } catch { /* action unsupported on this browser */ }
+	};
+	setHandler("play", () => { audioPlayer.play().catch(() => { }); });
+	setHandler("pause", () => audioPlayer.pause());
+	setHandler("stop", () => audioPlayer.pause());
+	setHandler("previoustrack", () => playPrevTrack());
+	setHandler("nexttrack", () => playNextTrack());
+	setHandler("seekbackward", (details) => {
+		audioPlayer.currentTime = Math.max(audioPlayer.currentTime - (details.seekOffset || 10), 0);
+	});
+	setHandler("seekforward", (details) => {
+		audioPlayer.currentTime = Math.min(audioPlayer.currentTime + (details.seekOffset || 10), audioPlayer.duration || Infinity);
+	});
+	setHandler("seekto", (details) => {
+		if (details.fastSeek && "fastSeek" in audioPlayer) { audioPlayer.fastSeek(details.seekTime); return; }
+		audioPlayer.currentTime = details.seekTime;
+	});
+}
+
+function updateMediaSessionPositionState() {
+	if (!hasMediaSession || !("setPositionState" in navigator.mediaSession)) return;
+	if (!audioPlayer.duration || !isFinite(audioPlayer.duration)) return;
+	try {
+		navigator.mediaSession.setPositionState({
+			duration: audioPlayer.duration,
+			playbackRate: audioPlayer.playbackRate || 1,
+			position: audioPlayer.currentTime,
+		});
+	} catch { /* position momentarily out of range during track switch */ }
+}
+
+// ============================================
+//  NEXT-TRACK PRELOADING — warms the browser's network/HTTP
+//  cache for the upcoming track so the switch on "ended" is
+//  near-instant instead of waiting on a fresh fetch, which is
+//  the gap most likely to get the background tab suspended.
+// ============================================
+const preloadAudio = new Audio();
+preloadAudio.preload = "auto";
+preloadAudio.muted = true;
+preloadAudio.volume = 0;
+
+function peekNextTrack() {
+	if (activePlaylistIdx < 0 || !playlists[activePlaylistIdx]) return null;
+	const pl = playlists[activePlaylistIdx];
+	if (!pl || pl.tracks.length === 0) return null;
+	if (shuffleOn) {
+		const si = shuffleOrder.indexOf(playingTrackIdx);
+		if (si < 0) return null;
+		return pl.tracks[shuffleOrder[(si + 1) % shuffleOrder.length]];
+	}
+	return pl.tracks[(playingTrackIdx + 1) % pl.tracks.length];
+}
+
+function preloadNextTrack() {
+	const next = peekNextTrack();
+	if (!next) return;
+	const url = mediaUrl(next.path);
+	if (preloadAudio.src !== url) {
+		preloadAudio.src = url;
+		preloadAudio.load();
+	}
 }
 
 function updatePlayIcons() {
@@ -305,6 +426,9 @@ function updatePlayIcons() {
 	const svg = paused ? `<polygon points="5 3 19 12 5 21 5 3"/>` : `<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>`;
 	$("#play-icon").innerHTML = svg;
 	$("#d-play-icon").innerHTML = svg;
+	const label = paused ? "Lecture" : "Pause";
+	$("#btn-play").setAttribute("aria-label", label);
+	$("#d-play").setAttribute("aria-label", label);
 }
 
 function togglePlay() {
@@ -329,9 +453,29 @@ audioPlayer.addEventListener("timeupdate", () => {
 	$("#seek-bar").value = pct;
 	$("#time-current").textContent = fmtTime(audioPlayer.currentTime);
 	$("#time-total").textContent = fmtTime(audioPlayer.duration);
+	const timeLabel = `${fmtTime(audioPlayer.currentTime)} sur ${fmtTime(audioPlayer.duration)}`;
+	const progressBar = $("#pb-progress-bar");
+	progressBar.setAttribute("aria-valuenow", Math.round(pct));
+	progressBar.setAttribute("aria-valuetext", timeLabel);
+	$("#seek-bar").setAttribute("aria-valuetext", timeLabel);
+	updateMediaSessionPositionState();
 });
-audioPlayer.addEventListener("play", updatePlayIcons);
-audioPlayer.addEventListener("pause", updatePlayIcons);
+audioPlayer.addEventListener("play", () => {
+	updatePlayIcons();
+	if (hasMediaSession) navigator.mediaSession.playbackState = "playing";
+});
+audioPlayer.addEventListener("pause", () => {
+	updatePlayIcons();
+	if (hasMediaSession) navigator.mediaSession.playbackState = "paused";
+});
+audioPlayer.addEventListener("loadedmetadata", updateMediaSessionPositionState);
+// Preload the next track a bit before the current one ends, so the
+// switch on "ended" doesn't have to wait on a fresh network fetch —
+// that wait is what let Android suspend the background tab.
+audioPlayer.addEventListener("timeupdate", () => {
+	if (!audioPlayer.duration || !isFinite(audioPlayer.duration)) return;
+	if (audioPlayer.duration - audioPlayer.currentTime <= 15) preloadNextTrack();
+});
 audioPlayer.addEventListener("ended", () => playNextTrack());
 
 $("#seek-bar").addEventListener("input", function () {
@@ -343,6 +487,14 @@ $("#pb-progress-bar").addEventListener("click", e => {
 	const r = e.currentTarget.getBoundingClientRect();
 	audioPlayer.currentTime = ((e.clientX - r.left) / r.width) * audioPlayer.duration;
 });
+$("#pb-progress-bar").addEventListener("keydown", e => {
+	if (!audioPlayer.duration) return;
+	const step = audioPlayer.duration * 0.05;
+	if (e.key === "ArrowRight" || e.key === "ArrowUp") { e.preventDefault(); audioPlayer.currentTime = Math.min(audioPlayer.currentTime + step, audioPlayer.duration); }
+	else if (e.key === "ArrowLeft" || e.key === "ArrowDown") { e.preventDefault(); audioPlayer.currentTime = Math.max(audioPlayer.currentTime - step, 0); }
+	else if (e.key === "Home") { e.preventDefault(); audioPlayer.currentTime = 0; }
+	else if (e.key === "End") { e.preventDefault(); audioPlayer.currentTime = audioPlayer.duration; }
+});
 
 // ============================================
 //  VOLUME
@@ -353,6 +505,10 @@ function setVolume(v) {
 	const pct = Math.round(volume * 100);
 	$("#volume-slider").value = pct;
 	$("#drawer-volume").value = pct;
+	$("#volume-slider").setAttribute("aria-valuetext", `${pct} pour cent`);
+	$("#drawer-volume").setAttribute("aria-valuetext", `${pct} pour cent`);
+	$("#btn-mute").setAttribute("aria-pressed", volume === 0 ? "true" : "false");
+	$("#btn-mute").setAttribute("aria-label", volume === 0 ? "Réactiver le son" : "Couper le son");
 	updateVolumeIcon();
 }
 
@@ -396,11 +552,14 @@ function doPlayTrack(idx) {
 	const t = pl.tracks[idx];
 	const found = allTracks.find(at => at.path === t.path);
 	playTrackDirect(t.path, t.name, found?.cover || null);
+	preloadNextTrack();
 }
 function startPlaylist(plIdx, shuffle) {
 	activePlaylistIdx = plIdx;
 	const pl = playlists[plIdx]; if (!pl || pl.tracks.length === 0) { toast("Playlist vide", "info"); return; }
-	shuffleOn = shuffle; $("#btn-shuffle-toggle").classList.toggle("active-toggle", shuffleOn);
+	shuffleOn = shuffle;
+	$("#btn-shuffle-toggle").classList.toggle("active-toggle", shuffleOn);
+	$("#btn-shuffle-toggle").setAttribute("aria-pressed", shuffleOn ? "true" : "false");
 	if (shuffleOn) buildShuffleOrder();
 	doPlayTrack(shuffleOn ? shuffleOrder[0] : 0);
 }
@@ -410,7 +569,9 @@ function buildShuffleOrder() {
 	for (let i = shuffleOrder.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1));[shuffleOrder[i], shuffleOrder[j]] = [shuffleOrder[j], shuffleOrder[i]]; }
 }
 function toggleShuffle() {
-	shuffleOn = !shuffleOn; $("#btn-shuffle-toggle").classList.toggle("active-toggle", shuffleOn);
+	shuffleOn = !shuffleOn;
+	$("#btn-shuffle-toggle").classList.toggle("active-toggle", shuffleOn);
+	$("#btn-shuffle-toggle").setAttribute("aria-pressed", shuffleOn ? "true" : "false");
 	if (shuffleOn) buildShuffleOrder();
 	toast(shuffleOn ? "Aléatoire activé" : "Lecture séquentielle", "info");
 }
@@ -484,14 +645,18 @@ async function savePlaylistToNC() {
 function renderPlaylistGrid() {
 	const grid = $("#playlist-grid");
 	grid.innerHTML = playlists.map((pl, i) =>
-		`<div class="pl-card" data-idx="${i}" style="animation-delay:${i * 30}ms">
-			<div class="pl-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+		`<div class="pl-card" data-idx="${i}" style="animation-delay:${i * 30}ms"
+			aria-label="Ouvrir la playlist ${pl.name}, ${pl.tracks.length} piste${pl.tracks.length > 1 ? "s" : ""}">
+			<div class="pl-card-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" focusable="false"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
 			<div class="pl-card-name">${pl.name}</div>
-			<div class="pl-card-count">${pl.tracks.length} piste${pl.tracks.length > 1 ? "s" : ""}</div>
+			<div class="pl-card-count" aria-hidden="true">${pl.tracks.length} piste${pl.tracks.length > 1 ? "s" : ""}</div>
 			${pl.imported ? `<span class="pl-card-imported">Nextcloud</span>` : ""}
 		</div>`
 	).join("");
-	grid.querySelectorAll(".pl-card").forEach(c => c.addEventListener("click", () => openPlaylistDetail(parseInt(c.dataset.idx))));
+	grid.querySelectorAll(".pl-card").forEach(c => {
+		enableRowActivation(c);
+		c.addEventListener("click", () => openPlaylistDetail(parseInt(c.dataset.idx)));
+	});
 }
 
 function openPlaylistDetail(idx) {
@@ -510,13 +675,17 @@ function renderDetailTracks() {
 	if (pl.tracks.length === 0) { container.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text-3);font-size:.84rem;">Playlist vide</div>`; return; }
 	container.innerHTML = pl.tracks.map((t, i) => {
 		const isPlaying = activePlaylistIdx === viewingPlaylistIdx && playingTrackIdx === i;
-		return `<div class="dt-row${isPlaying ? " playing" : ""}" data-idx="${i}">
-			<span class="dt-num">${i + 1}</span><span class="dt-name">${t.name}</span>
-			<span class="dt-ext">${ext(t.name)}</span>
-			<button class="dt-remove" data-idx="${i}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+		return `<div class="dt-row${isPlaying ? " playing" : ""}" data-idx="${i}"
+			aria-label="Lire ${t.name}"${isPlaying ? ' aria-current="true"' : ""}>
+			<span class="dt-num" aria-hidden="true">${i + 1}</span><span class="dt-name">${t.name}</span>
+			<span class="dt-ext" aria-hidden="true">${ext(t.name)}</span>
+			<button class="dt-remove" data-idx="${i}" aria-label="Retirer ${t.name} de la playlist"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
 		</div>`;
 	}).join("");
-	container.querySelectorAll(".dt-row").forEach(r => r.addEventListener("click", e => { if (e.target.closest(".dt-remove")) return; activePlaylistIdx = viewingPlaylistIdx; doPlayTrack(parseInt(r.dataset.idx)); }));
+	container.querySelectorAll(".dt-row").forEach(r => {
+		enableRowActivation(r);
+		r.addEventListener("click", e => { if (e.target.closest(".dt-remove")) return; activePlaylistIdx = viewingPlaylistIdx; doPlayTrack(parseInt(r.dataset.idx)); });
+	});
 	container.querySelectorAll(".dt-remove").forEach(btn => btn.addEventListener("click", e => {
 		e.stopPropagation(); const idx = parseInt(btn.dataset.idx);
 		pl.tracks.splice(idx, 1);
@@ -528,8 +697,38 @@ function renderDetailTracks() {
 // ============================================
 //  DRAWER
 // ============================================
-function openDrawer() { $("#drawer").classList.remove("hidden"); }
-function closeDrawer() { $("#drawer").classList.add("hidden"); }
+let drawerReturnFocus = null;
+
+function getFocusableInDrawer() {
+	return Array.from($("#drawer").querySelectorAll(
+		'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+	)).filter(el => el.offsetParent !== null);
+}
+
+function drawerKeydown(e) {
+	if (e.key === "Escape") { e.preventDefault(); closeDrawer(); return; }
+	if (e.key !== "Tab") return;
+	const focusable = getFocusableInDrawer();
+	if (focusable.length === 0) return;
+	const first = focusable[0], last = focusable[focusable.length - 1];
+	if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+	else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+}
+
+function openDrawer() {
+	drawerReturnFocus = document.activeElement;
+	$("#drawer").classList.remove("hidden");
+	$("#btn-expand").setAttribute("aria-expanded", "true");
+	document.addEventListener("keydown", drawerKeydown);
+	// Move focus into the dialog, per the standard dialog pattern.
+	$("#btn-collapse").focus();
+}
+function closeDrawer() {
+	$("#drawer").classList.add("hidden");
+	$("#btn-expand").setAttribute("aria-expanded", "false");
+	document.removeEventListener("keydown", drawerKeydown);
+	(drawerReturnFocus || $("#btn-expand")).focus();
+}
 
 async function showDrawerMeta(path, name) {
 	try {
@@ -542,8 +741,13 @@ function renderDrawerQueue() {
 	if (activePlaylistIdx < 0) { $("#drawer-queue").innerHTML = ""; return; }
 	const pl = playlists[activePlaylistIdx]; if (!pl) return;
 	const q = $("#drawer-queue");
-	q.innerHTML = pl.tracks.map((t, i) => `<div class="dq-row${i === playingTrackIdx ? " playing" : ""}" data-idx="${i}"><span class="dq-num">${i + 1}</span><span class="dq-name">${t.name}</span></div>`).join("");
-	q.querySelectorAll(".dq-row").forEach(r => r.addEventListener("click", () => doPlayTrack(parseInt(r.dataset.idx))));
+	q.innerHTML = pl.tracks.map((t, i) => `<div class="dq-row${i === playingTrackIdx ? " playing" : ""}" data-idx="${i}"
+		aria-label="Lire ${t.name}"${i === playingTrackIdx ? ' aria-current="true"' : ""}>
+		<span class="dq-num" aria-hidden="true">${i + 1}</span><span class="dq-name">${t.name}</span></div>`).join("");
+	q.querySelectorAll(".dq-row").forEach(r => {
+		enableRowActivation(r);
+		r.addEventListener("click", () => doPlayTrack(parseInt(r.dataset.idx)));
+	});
 }
 
 // ============================================
@@ -552,12 +756,28 @@ function renderDrawerQueue() {
 let currentView = "medias";
 function switchView(view) {
 	currentView = view;
-	$$("#main-nav .nav-tab").forEach(t => t.classList.toggle("active", t.dataset.view === view));
+	$$("#main-nav .nav-tab").forEach(t => {
+		const active = t.dataset.view === view;
+		t.classList.toggle("active", active);
+		t.setAttribute("aria-selected", active ? "true" : "false");
+		t.tabIndex = active ? 0 : -1;
+	});
 	$("#view-medias").classList.toggle("hidden", view !== "medias");
 	$("#view-playlists").classList.toggle("hidden", view !== "playlists");
 	if (view === "playlists") { $("#playlist-detail").classList.add("hidden"); $("#playlist-grid").classList.remove("hidden"); renderPlaylistGrid(); }
 }
 $$("#main-nav .nav-tab").forEach(t => t.addEventListener("click", () => switchView(t.dataset.view)));
+// Standard tablist keyboard pattern: Left/Right move focus AND selection between tabs.
+$("#main-nav").addEventListener("keydown", e => {
+	if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+	const tabs = Array.from($$("#main-nav .nav-tab"));
+	const i = tabs.indexOf(document.activeElement);
+	if (i < 0) return;
+	e.preventDefault();
+	const next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+	next.focus();
+	switchView(next.dataset.view);
+});
 
 // ============================================
 //  EVENTS
@@ -606,7 +826,11 @@ $("#detail-name").addEventListener("change", function () {
 });
 
 document.addEventListener("keydown", e => {
-	if (e.target.tagName === "INPUT") return;
+	// Don't hijack Space/Enter when focus is on a control that needs it
+	// itself (form fields, buttons, custom rows, tabs, sliders) —
+	// otherwise keyboard users could never activate those controls.
+	const interactive = e.target.closest('input, textarea, select, button, [role="button"], [role="slider"], [role="tab"], a[href]');
+	if (interactive) return;
 	if (e.key === " " || e.key === "k") { e.preventDefault(); togglePlay(); }
 	if (e.key === "ArrowRight" && e.shiftKey) playNextTrack();
 	if (e.key === "ArrowLeft" && e.shiftKey) playPrevTrack();
@@ -625,4 +849,5 @@ function toast(msg, type = "info") {
 // ============================================
 //  INIT
 // ============================================
+setupMediaSessionHandlers();
 checkAuth();
