@@ -159,9 +159,11 @@ router.get("/callback", async (req, res) => {
 		console.error("[Auth] Refus Nextcloud :", error, req.query.error_description);
 		return res.redirect(`${domain}?error=${encodeURIComponent(error)}`);
 	}
+
 	const pending = state && pendingAuth.get(state);
-	pendingAuth.delete(state);
-	if (!code || !pending || Date.now() > pending.expires) {
+	if (state) pendingAuth.delete(state);
+	if (!code) return res.redirect(`${domain}?error=missing_code`);
+	if (!pending || Date.now() > pending.expires) {
 		return res.redirect(`${domain}?error=invalid_state`);
 	}
 
@@ -178,13 +180,49 @@ router.get("/callback", async (req, res) => {
 				code_verifier: pending.verifier,
 			}),
 		});
+
 		const text = await tokenRes.text();
 		if (!tokenRes.ok) {
 			console.error(`[Auth] Échange du code refusé (HTTP ${tokenRes.status}) :`, text);
 			return res.redirect(`${domain}?error=auth_failed`);
 		}
+
 		const tokens = JSON.parse(text);
-		// … suite inchangée (appel à /ocs/v2.php/cloud/user, enregistrement des jetons)
+		if (!tokens.access_token) {
+			console.error("[Auth] Réponse sans access_token :", tokens);
+			return res.redirect(`${domain}?error=auth_failed`);
+		}
+
+		// Nextcloud fournit normalement user_id dans la réponse du jeton,
+		// l'OCS sert de solution de repli.
+		let userId = tokens.user_id;
+		if (!userId) {
+			const userRes = await fetch(`${nextcloud_url}/ocs/v2.php/cloud/user?format=json`, {
+				headers: {
+					Authorization: `Bearer ${tokens.access_token}`,
+					"OCS-APIRequest": "true",
+					Accept: "application/json",
+				},
+			});
+			if (!userRes.ok) {
+				console.error(`[Auth] Lecture de l'utilisateur refusée (HTTP ${userRes.status})`);
+				return res.redirect(`${domain}?error=user_lookup_failed`);
+			}
+			const userData = await userRes.json();
+			userId = userData?.ocs?.data?.id;
+		}
+		if (!userId) return res.redirect(`${domain}?error=no_user_id`);
+
+		console.log(`[Auth] Utilisateur ${userId} authentifié, jeton valable ${tokens.expires_in} s`);
+
+		userTokens.set(userId, {
+			access_token: tokens.access_token,
+			refresh_token: tokens.refresh_token,
+			expires_at: Date.now() + tokens.expires_in * 1000,
+			refreshPromise: null,
+		});
+
+		res.redirect(`${domain}?userId=${encodeURIComponent(userId)}`);
 	} catch (err) {
 		console.error("[Auth] Erreur de rappel :", err);
 		res.redirect(`${domain}?error=server_error`);
