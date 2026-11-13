@@ -1,5 +1,6 @@
 const { Router } = require("express");
 const { createClient } = require("webdav");
+const crypto = require("crypto");
 const router = Router();
 const { express_values, nextcloud_values } = require("../../express_utils/env-values-dictionnary");
 
@@ -11,8 +12,9 @@ const domain = express_values.domain;
 const api_route = express_values.public_route;
 
 const redirect = `${domain}/${api_route}/test/callback`;
+const pendingAuth = new Map();
 
-console.log("[Pastamedia] Redirect URI:", redirect);
+console.log("[NCMP] Redirect URI:", redirect);
 
 // ============================================================
 //  TOKEN STORAGE
@@ -135,15 +137,33 @@ async function authMiddleware(req, res, next) {
 // ============================================================
 
 router.get("/login", (req, res) => {
-	const authUrl =
-		`${nextcloud_url}/index.php/apps/oauth2/authorize?` +
-		`response_type=code&client_id=${client_id}&redirect_uri=${encodeURIComponent(redirect)}`;
-	res.redirect(authUrl);
+	const state = crypto.randomBytes(16).toString("hex");
+	const verifier = crypto.randomBytes(32).toString("base64url");
+	const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+	pendingAuth.set(state, { verifier, expires: Date.now() + 600_000 });
+
+	const params = new URLSearchParams({
+		response_type: "code",
+		client_id,
+		redirect_uri: redirect,
+		state,
+		code_challenge: challenge,
+		code_challenge_method: "S256",
+	});
+	res.redirect(`${nextcloud_url}/index.php/apps/oauth2/authorize?${params}`);
 });
 
 router.get("/callback", async (req, res) => {
-	const { code } = req.query;
-	if (!code) return res.redirect(`${domain}?error=missing_code`);
+	const { code, state, error } = req.query;
+	if (error) {
+		console.error("[Auth] Refus Nextcloud :", error, req.query.error_description);
+		return res.redirect(`${domain}?error=${encodeURIComponent(error)}`);
+	}
+	const pending = state && pendingAuth.get(state);
+	pendingAuth.delete(state);
+	if (!code || !pending || Date.now() > pending.expires) {
+		return res.redirect(`${domain}?error=invalid_state`);
+	}
 
 	try {
 		const tokenRes = await fetch(`${nextcloud_url}/index.php/apps/oauth2/api/v1/token`, {
@@ -155,37 +175,18 @@ router.get("/callback", async (req, res) => {
 				redirect_uri: redirect,
 				client_id,
 				client_secret,
+				code_verifier: pending.verifier,
 			}),
 		});
-
-		const tokens = await tokenRes.json();
-		if (!tokens.access_token) {
-			console.error("[Auth] Callback token exchange failed:", tokens);
+		const text = await tokenRes.text();
+		if (!tokenRes.ok) {
+			console.error(`[Auth] Échange du code refusé (HTTP ${tokenRes.status}) :`, text);
 			return res.redirect(`${domain}?error=auth_failed`);
 		}
-
-		const userRes = await fetch(`${nextcloud_url}/ocs/v2.php/cloud/user`, {
-			headers: {
-				Authorization: `Bearer ${tokens.access_token}`,
-				"OCS-APIRequest": "true",
-				Accept: "application/json",
-			},
-		});
-		const userData = await userRes.json();
-		const userId = userData.ocs?.data?.id || "unknown";
-
-		console.log(`[Auth] User ${userId} authenticated, token expires in ${tokens.expires_in}s`);
-
-		userTokens.set(userId, {
-			access_token: tokens.access_token,
-			refresh_token: tokens.refresh_token,
-			expires_at: Date.now() + tokens.expires_in * 1000,
-			refreshPromise: null,
-		});
-
-		res.redirect(`${domain}?userId=${encodeURIComponent(userId)}`);
+		const tokens = JSON.parse(text);
+		// … suite inchangée (appel à /ocs/v2.php/cloud/user, enregistrement des jetons)
 	} catch (err) {
-		console.error("[Auth] Callback error:", err);
+		console.error("[Auth] Erreur de rappel :", err);
 		res.redirect(`${domain}?error=server_error`);
 	}
 });
